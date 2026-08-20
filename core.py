@@ -24,19 +24,27 @@ class LexerError(Exception):
         super().__init__(f"[行 {line}, 列 {col}] {message}")
 
 
-@dataclass
+# 基类不作为 dataclass，仅作为类型标记
 class Expr:
+    pass
+
+
+class Stmt:
     pass
 
 
 @dataclass
 class Literal(Expr):
     value: Any
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class Variable(Expr):
     name: str
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -44,12 +52,16 @@ class Binary(Expr):
     left: Expr
     op: str
     right: Expr
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class Unary(Expr):
     op: str
     right: Expr
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -57,12 +69,16 @@ class Assign(Expr):
     name: Union[str, 'Attribute']
     value: Expr
     is_ref: bool = False
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class Swap(Expr):
     left: str
     right: str
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -70,12 +86,16 @@ class Call(Expr):
     func: Expr
     args: List[Expr]
     kwargs: List[tuple]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class Attribute(Expr):
     obj: Expr
     attr: str
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -83,27 +103,37 @@ class IfExpr(Expr):
     condition: Expr
     then_expr: Expr
     else_expr: Expr
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class ListExpr(Expr):
     elements: List[Expr]
     fixed_length: Optional[int] = None
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class DictExpr(Expr):
     items: List[tuple]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class SetExpr(Expr):
     elements: List[Expr]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class TupleExpr(Expr):
     elements: List[Expr]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -112,33 +142,38 @@ class RangeExpr(Expr):
     end: Expr
     step: Optional[Expr]
     inclusive: bool
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class CodeBlock(Expr):
     body: List['Stmt']
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class LambdaExpr(Expr):
     params: List[str]
     body: Expr
-
-
-@dataclass
-class Stmt:
-    pass
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class ExprStmt(Stmt):
     expr: Expr
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class Subscript(Expr):
     obj: Expr
     index: Expr
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -148,11 +183,14 @@ class DefineStmt(Stmt):
     value: Optional[Expr]
     is_ref: bool = False
     is_const: bool = False
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class FuncDefStmt(Stmt):
     name: str
+    # [{'name': str, 'type': Optional[str], 'default': Optional[Expr]}]
     params: List[dict]
     varargs: Optional[str]
     varargs_type: Optional[str]
@@ -161,6 +199,9 @@ class FuncDefStmt(Stmt):
     defaults: dict
     body: List[Stmt]
     is_single_line: bool
+    return_type: Optional[str] = None
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -168,6 +209,8 @@ class ClassDefStmt(Stmt):
     name: str
     bases: List[str]
     body: List[Stmt]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -176,6 +219,8 @@ class IfStmt(Stmt):
     body: List[Stmt]
     elifs: List[tuple]
     else_body: List[Stmt]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -185,37 +230,49 @@ class ForStmt(Stmt):
     range_expr: Optional[RangeExpr]
     count: Optional[Expr]
     body: List[Stmt]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class WhileStmt(Stmt):
     condition: Expr
     body: List[Stmt]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class BreakStmt(Stmt):
-    pass
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class ContinueStmt(Stmt):
-    pass
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class ReturnStmt(Stmt):
     value: Optional[Expr]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class GotoStmt(Stmt):
     label: str
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class LabelStmt(Stmt):
     name: str
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -223,6 +280,8 @@ class ImportStmt(Stmt):
     module: str
     alias: Optional[str]
     names: List[tuple]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -231,29 +290,39 @@ class TryStmt(Stmt):
     excepts: List[dict]
     else_body: Optional[List[Stmt]]
     finally_body: Optional[List[Stmt]]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class RaiseStmt(Stmt):
     exception: Expr
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class WithStmt(Stmt):
     items: List[tuple]
     body: List[Stmt]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class MatchStmt(Stmt):
     value: Expr
     cases: List[dict]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
 class UsingStmt(Stmt):
     name: str
     body: List[Stmt]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -261,6 +330,8 @@ class DecoratorStmt(Stmt):
     target: str
     name: str
     body: List[Stmt]
+    line: int = 0
+    col: int = 0
 
 
 @dataclass
@@ -305,7 +376,6 @@ def split_token(code):
 
     def advance_line():
         nonlocal i, col, line
-        # 跳过当前行所有字符（包括注释内容和三个斜杠）
         while i < n and current() != '\n':
             advance()
         i += 1
@@ -512,13 +582,18 @@ class Parser:
         self.pos += 1
         return tok
 
+    def error(self, msg, tok=None):
+        if tok is None:
+            tok = self.current()
+        if tok:
+            raise SyntaxError(f"[行 {tok.line}, 列 {tok.col}] {msg}")
+        else:
+            raise SyntaxError(msg)
+
     def expect(self, type_, value=None):
         tok = self.current()
-
         if not tok or tok.type != type_ or (value is not None and tok.value != value):
-            print(
-                f"缺少 token: \"{value}\" 在第{tok.line}行, 第{tok.col}列", file=sys.stderr)
-            sys.exit(1)
+            self.error(f"期望 '{value}'", tok)
         return self.advance()
 
     def match(self, type_, value=None):
@@ -535,7 +610,6 @@ class Parser:
 
     def parse_statement(self):
         tok = self.current()
-        # ---- 定义 types 集合（必须在开头） ----
         types = {'int', 'str', 'float', 'double', 'bool', 'boolean', 'list',
                  'dict', 'set', 'tuple', 'bytes', 'code', 'function', 'any'}
 
@@ -545,12 +619,10 @@ class Parser:
         if tok.type == 'KEYWORD' and tok.value == 'end':
             return None
 
-        # ---- 类型声明（包括 list[6] float 格式） ----
+        # ---- 类型声明 ----
         if tok.value in types:
             base_type = self.advance().value
             type_params = []
-
-            # 解析 [n] 部分
             if self.match('SYMBOL', '['):
                 self.advance()
                 if self.match('INT'):
@@ -562,7 +634,6 @@ class Parser:
                 type_params.append(param)
                 self.expect('SYMBOL', ']')
 
-            # 解析元素类型（如 float）
             elem_type = None
             builtin_types = {'int', 'str', 'float', 'double', 'bool', 'boolean',
                              'list', 'dict', 'set', 'tuple', 'bytes', 'code', 'function', 'any'}
@@ -570,10 +641,7 @@ class Parser:
             if tok2.type == 'TYPE' or (tok2.type == 'IDENTIFIER' and tok2.value in builtin_types):
                 elem_type = self.advance().value
 
-            # 解析变量名
             name = self.expect('IDENTIFIER')
-
-            # 解析赋值
             if self.match('SYMBOL', '<-'):
                 self.advance()
                 value = self.parse_expr()
@@ -586,7 +654,8 @@ class Parser:
             if elem_type:
                 full_type += ' ' + elem_type
 
-            return DefineStmt(name.value, full_type, value, is_ref=False, is_const=False)
+            return DefineStmt(name.value, full_type, value, is_ref=False, is_const=False,
+                              line=tok.line, col=tok.col)
 
         # ---- 关键字语句 ----
         if tok.value == 'if':
@@ -601,24 +670,23 @@ class Parser:
             return self.parse_class()
         if tok.value == 'return':
             self.advance()
-            if self.match('SYMBOL', ':'):
-                return ReturnStmt(None)
-            return ReturnStmt(self.parse_expr())
+            val = self.parse_expr() if not self.match('SYMBOL', ':') else None
+            return ReturnStmt(val, line=tok.line, col=tok.col)
         if tok.value == 'break':
             self.advance()
-            return BreakStmt()
+            return BreakStmt(line=tok.line, col=tok.col)
         if tok.value == 'continue':
             self.advance()
-            return ContinueStmt()
+            return ContinueStmt(line=tok.line, col=tok.col)
         if tok.value == 'goto':
             self.advance()
             label = self.expect('IDENTIFIER')
-            return GotoStmt(label.value)
+            return GotoStmt(label.value, line=tok.line, col=tok.col)
         if tok.value == 'label':
             self.advance()
             name = self.expect('IDENTIFIER')
             self.expect('SYMBOL', ':')
-            return LabelStmt(name.value)
+            return LabelStmt(name.value, line=tok.line, col=tok.col)
         if tok.value == 'import':
             return self.parse_import()
         if tok.value == 'from':
@@ -627,7 +695,8 @@ class Parser:
             return self.parse_try()
         if tok.value == 'raise':
             self.advance()
-            return RaiseStmt(self.parse_expr())
+            exc = self.parse_expr()
+            return RaiseStmt(exc, line=tok.line, col=tok.col)
         if tok.value == 'with':
             return self.parse_with()
         if tok.value == 'match':
@@ -641,60 +710,85 @@ class Parser:
         if tok.value == 'const':
             return self.parse_define(is_const=True)
 
-        # ---- 单行函数检测 ----
+        # ---- 单行函数检测（支持类型注解和默认值） ----
         if tok.type == 'IDENTIFIER' and self.peek() and self.peek().value == '(':
             saved = self.pos
             name = self.advance().value
             self.expect('SYMBOL', '(')
 
-            args = []
+            params = []
+            defaults = {}
+            builtin_types = {'int', 'str', 'float', 'double', 'bool', 'boolean',
+                             'list', 'dict', 'set', 'tuple', 'bytes', 'code', 'function', 'any'}
             while not self.match('SYMBOL', ')'):
-                args.append(self.parse_expr())
+                # 保存当前参数解析位置
+                param_saved = self.pos
+                ptype = None
+                # 检查类型注解
+                if self.match('IDENTIFIER') and self.current().value in builtin_types:
+                    ptype = self.advance().value
+                # 期望参数名（标识符）
+                if not self.match('IDENTIFIER'):
+                    # 不是标识符，说明不是函数定义，回退
+                    self.pos = saved
+                    return self.parse_expression_statement()
+                pname = self.advance().value
+                default = None
+                if self.match('SYMBOL', '='):
+                    self.advance()
+                    default = self.parse_expr()
+                    defaults[pname] = default
+                params.append(
+                    {'name': pname, 'type': ptype, 'default': default})
                 if self.match('SYMBOL', ','):
                     self.advance()
             self.expect('SYMBOL', ')')
 
+            return_type = None
+            if self.match('SYMBOL', '->'):
+                self.advance()
+                typetok = self.current()
+                if typetok.type in ('IDENTIFIER', 'TYPE', 'KEYWORD'):
+                    return_type = self.advance().value
+                else:
+                    self.error("期望返回值类型", typetok)
+
             if self.match('SYMBOL', '<-'):
                 self.advance()
                 body_expr = self.parse_expr()
-                is_func_def = True
-                params = []
-                for arg in args:
-                    if isinstance(arg, Variable):
-                        params.append(
-                            {'name': arg.name, 'type': None, 'default': None})
-                    else:
-                        is_func_def = False
-                        break
-                if is_func_def:
-                    return FuncDefStmt(
-                        name=name,
-                        params=params,
-                        varargs=None,
-                        varargs_type=None,
-                        kwargs=None,
-                        kwargs_type=None,
-                        defaults={},
-                        body=[ExprStmt(body_expr)],
-                        is_single_line=True
-                    )
+                node = FuncDefStmt(
+                    name=name,
+                    params=params,
+                    varargs=None,
+                    varargs_type=None,
+                    kwargs=None,
+                    kwargs_type=None,
+                    defaults=defaults,
+                    body=[ExprStmt(body_expr)],
+                    is_single_line=True,
+                    return_type=return_type,
+                    line=tok.line,
+                    col=tok.col
+                )
+                return node
+            else:
+                # 不是函数定义，回退
                 self.pos = saved
                 return self.parse_expression_statement()
-
-            self.pos = saved
-            return self.parse_expression_statement()
 
         # ---- 装饰器 ----
         if tok.type == 'SYMBOL' and tok.value == '@':
             return self.parse_decorator()
 
-        # ---- 表达式语句（兜底） ----
+        # ---- 表达式语句 ----
         return self.parse_expression_statement()
 
     def parse_expression_statement(self):
-        return ExprStmt(self.parse_expr())
+        expr = self.parse_expr()
+        return ExprStmt(expr, line=expr.line, col=expr.col)
 
     def parse_function(self):
+        start = self.current()
         self.expect('KEYWORD', 'def')
         name = self.expect('IDENTIFIER')
         self.expect('SYMBOL', '(')
@@ -718,36 +812,41 @@ class Parser:
             if tok.type == 'IDENTIFIER' and tok.value in builtin_types:
                 ptype = self.advance().value
 
-            # 处理 **kwargs（必须在 * 之前）
             if self.match('SYMBOL', '**'):
                 self.advance()
                 kwargs = self.expect('IDENTIFIER').value
                 break
 
-            # 处理 *args
             if self.match('SYMBOL', '*'):
                 self.advance()
-
                 varargs = self.expect('IDENTIFIER').value
                 if self.match('SYMBOL', ','):
                     self.advance()
-                continue  # 不再尝试解析普通参数
+                continue
 
             pname = self.expect('IDENTIFIER').value
-
             default = None
             if self.match('SYMBOL', '='):
                 self.advance()
                 default = self.parse_expr()
                 defaults[pname] = default
 
-            params.append(
-                {'name': pname, 'type': ptype, 'default': default})
+            params.append({'name': pname, 'type': ptype, 'default': default})
 
             if self.match('SYMBOL', ','):
                 self.advance()
 
         self.expect('SYMBOL', ')')
+
+        return_type = None
+        if self.match('SYMBOL', '->'):
+            self.advance()
+            typetok = self.current()
+            if typetok.type in ('IDENTIFIER', 'TYPE', 'KEYWORD'):
+                return_type = self.advance().value
+            else:
+                self.error("期望返回值类型", typetok)
+
         self.expect('SYMBOL', ':')
 
         body = []
@@ -766,10 +865,14 @@ class Parser:
             kwargs_type=kwargs_type,
             defaults=defaults,
             body=body,
-            is_single_line=False
+            is_single_line=False,
+            return_type=return_type,
+            line=start.line,
+            col=start.col
         )
 
     def parse_class(self):
+        start = self.current()
         self.expect('KEYWORD', 'class')
         name = self.expect('IDENTIFIER')
 
@@ -792,9 +895,10 @@ class Parser:
                 body.append(stmt)
         self.expect('KEYWORD', 'end')
 
-        return ClassDefStmt(name.value, bases, body)
+        return ClassDefStmt(name.value, bases, body, line=start.line, col=start.col)
 
     def parse_if(self):
+        start = self.current()
         self.expect('KEYWORD', 'if')
         cond = self.parse_expr()
         self.expect('SYMBOL', ':')
@@ -826,9 +930,11 @@ class Parser:
                 if stmt:
                     else_body.append(stmt)
         self.expect('KEYWORD', 'end')
-        return IfStmt(cond, body, elifs, else_body)
+
+        return IfStmt(cond, body, elifs, else_body, line=start.line, col=start.col)
 
     def parse_for(self):
+        start = self.current()
         self.expect('KEYWORD', 'for')
 
         variable = None
@@ -856,9 +962,10 @@ class Parser:
                 body.append(stmt)
         self.expect('KEYWORD', 'end')
 
-        return ForStmt(variable, iterable, range_expr, count, body)
+        return ForStmt(variable, iterable, range_expr, count, body, line=start.line, col=start.col)
 
     def parse_while(self):
+        start = self.current()
         self.expect('KEYWORD', 'while')
         cond = self.parse_expr()
         self.expect('SYMBOL', ':')
@@ -870,10 +977,11 @@ class Parser:
                 body.append(stmt)
         self.expect('KEYWORD', 'end')
 
-        return WhileStmt(cond, body)
+        return WhileStmt(cond, body, line=start.line, col=start.col)
 
     def parse_range(self):
-        start = self.parse_expr()
+        start = self.current()
+        left = self.parse_expr()
         inclusive = False
 
         if self.match('SYMBOL', '..='):
@@ -882,27 +990,28 @@ class Parser:
         elif self.match('SYMBOL', '..'):
             self.advance()
         else:
-            raise Exception("期望 '..' 或 '..='")
+            self.error("期望 '..' 或 '..='", self.current())
 
-        end = self.parse_expr()
+        right = self.parse_expr()
         step = None
-
         if self.match('SYMBOL', '+'):
             self.advance()
             step = self.parse_expr()
 
-        return RangeExpr(start, end, step, inclusive)
+        return RangeExpr(left, right, step, inclusive, line=start.line, col=start.col)
 
     def parse_import(self):
+        start = self.current()
         self.expect('KEYWORD', 'import')
         module = self.expect('IDENTIFIER').value
         alias = None
         if self.match('KEYWORD', 'as'):
             self.advance()
             alias = self.expect('IDENTIFIER').value
-        return ImportStmt(module, alias, [])
+        return ImportStmt(module, alias, [], line=start.line, col=start.col)
 
     def parse_from(self):
+        start = self.current()
         self.expect('KEYWORD', 'from')
         module = self.expect('IDENTIFIER').value
         self.expect('KEYWORD', 'import')
@@ -919,9 +1028,10 @@ class Parser:
                 break
             self.advance()
 
-        return ImportStmt(module, None, names)
+        return ImportStmt(module, None, names, line=start.line, col=start.col)
 
     def parse_try(self):
+        start = self.current()
         self.expect('KEYWORD', 'try')
         self.expect('SYMBOL', ':')
 
@@ -973,9 +1083,10 @@ class Parser:
                     finally_body.append(stmt)
 
         self.expect('KEYWORD', 'end')
-        return TryStmt(body, excepts, else_body, finally_body)
+        return TryStmt(body, excepts, else_body, finally_body, line=start.line, col=start.col)
 
     def parse_with(self):
+        start = self.current()
         self.expect('KEYWORD', 'with')
         items = []
         while True:
@@ -993,9 +1104,10 @@ class Parser:
             if stmt:
                 body.append(stmt)
         self.expect('KEYWORD', 'end')
-        return WithStmt(items, body)
+        return WithStmt(items, body, line=start.line, col=start.col)
 
     def parse_match(self):
+        start = self.current()
         self.expect('KEYWORD', 'match')
         value = self.parse_expr()
         self.expect('SYMBOL', ':')
@@ -1012,9 +1124,10 @@ class Parser:
                     case_body.append(stmt)
             cases.append({'pattern': pattern, 'body': case_body})
         self.expect('KEYWORD', 'end')
-        return MatchStmt(value, cases)
+        return MatchStmt(value, cases, line=start.line, col=start.col)
 
     def parse_using(self):
+        start = self.current()
         self.expect('KEYWORD', 'using')
         name = self.expect('IDENTIFIER').value
         self.expect('SYMBOL', ';')
@@ -1023,20 +1136,20 @@ class Parser:
             stmt = self.parse_statement()
             if stmt:
                 body.append(stmt)
-        return UsingStmt(name, body)
+        return UsingStmt(name, body, line=start.line, col=start.col)
 
     def parse_define(self, is_ref=False, is_const=False):
+        start = self.current()
         if is_ref:
             self.expect('KEYWORD', 'ref')
             name = self.expect('IDENTIFIER')
             self.expect('SYMBOL', '<-')
             value = self.parse_expr()
-            return DefineStmt(name.value, None, value, is_ref=True, is_const=False)
+            return DefineStmt(name.value, None, value, is_ref=True, is_const=False,
+                              line=start.line, col=start.col)
 
         kw = self.advance().value
         type_name = None
-
-        # 先检查 TYPE，再检查 IDENTIFIER（值是内置类型名）
         tok = self.current()
         builtin_types = {'int', 'str', 'float', 'double', 'bool', 'boolean',
                          'list', 'dict', 'set', 'tuple', 'bytes', 'code', 'function', 'any'}
@@ -1056,10 +1169,13 @@ class Parser:
             type_name=type_name,
             value=value,
             is_ref=False,
-            is_const=(kw == 'const')
+            is_const=(kw == 'const'),
+            line=start.line,
+            col=start.col
         )
 
     def parse_decorator(self):
+        start = self.current()
         self.expect('SYMBOL', '@')
         decorator = self.expect('IDENTIFIER').value
         name = None
@@ -1067,33 +1183,29 @@ class Parser:
             self.advance()
             name = self.expect('IDENTIFIER').value
         func = self.parse_function()
-        return DecoratorStmt(decorator, name, func)
+        return DecoratorStmt(decorator, name, func.body, line=start.line, col=start.col)
 
     # ---------- 表达式解析 ----------
     def parse_expr(self):
         node = self.parse_assignment()
 
-        # 检测 if 三元表达式
         if self.match('KEYWORD', 'if'):
-            # 偷看后面：如果是 `if` 后面跟着条件表达式，然后有 `:`，则是 if 语句，不是三元
             saved = self.pos
-            self.advance()  # 吃掉 if
+            self.advance()
             try:
-                self.parse_expr()  # 尝试解析条件
+                self.parse_expr()
                 if self.match('SYMBOL', ':'):
-                    # 这是 if 语句，回退
                     self.pos = saved
                     return node
             except:
                 pass
             self.pos = saved
 
-            # 真正的三元表达式
             self.advance()
             condition = self.parse_expr()
             self.expect('KEYWORD', 'else')
             else_expr = self.parse_expr()
-            return IfExpr(condition, node, else_expr)
+            return IfExpr(condition, node, else_expr, line=condition.line, col=condition.col)
 
         return node
 
@@ -1101,79 +1213,84 @@ class Parser:
         left = self.parse_or_expr()
 
         if self.match('SYMBOL', '<-'):
-            self.advance()
+            op_tok = self.advance()
             right = self.parse_expr()
             if isinstance(left, Variable):
-                return Assign(left.name, right, is_ref=False)
-            raise Exception("赋值左侧必须是变量")
+                return Assign(left.name, right, is_ref=False, line=op_tok.line, col=op_tok.col)
+            self.error("赋值左侧必须是变量", op_tok)
 
         if self.match('SYMBOL', '<->'):
-            self.advance()
+            op_tok = self.advance()
             right = self.parse_expr()
             if isinstance(left, Variable) and isinstance(right, Variable):
-                return Swap(left.name, right.name)
-            raise Exception("交换操作需要两个变量")
+                return Swap(left.name, right.name, line=op_tok.line, col=op_tok.col)
+            self.error("交换操作需要两个变量", op_tok)
 
         return left
 
     def parse_or_expr(self):
         left = self.parse_and_expr()
         while self.match('KEYWORD', 'or'):
-            op = self.advance().value
+            op_tok = self.advance()
             right = self.parse_and_expr()
-            left = Binary(left, op, right)
+            left = Binary(left, op_tok.value, right,
+                          line=op_tok.line, col=op_tok.col)
         return left
 
     def parse_and_expr(self):
         left = self.parse_compare_expr()
         while self.match('KEYWORD', 'and'):
-            op = self.advance().value
+            op_tok = self.advance()
             right = self.parse_compare_expr()
-            left = Binary(left, op, right)
+            left = Binary(left, op_tok.value, right,
+                          line=op_tok.line, col=op_tok.col)
         return left
 
     def parse_compare_expr(self):
         left = self.parse_add_expr()
         ops = {'==', '!=', '<', '>', '<=', '>='}
         while self.match('SYMBOL') and self.current().value in ops:
-            op = self.advance().value
+            op_tok = self.advance()
             right = self.parse_add_expr()
-            left = Binary(left, op, right)
+            left = Binary(left, op_tok.value, right,
+                          line=op_tok.line, col=op_tok.col)
         return left
 
     def parse_add_expr(self):
         left = self.parse_mul_expr()
         while self.match('SYMBOL') and self.current().value in ('+', '-'):
-            op = self.advance().value
+            op_tok = self.advance()
             right = self.parse_mul_expr()
-            left = Binary(left, op, right)
+            left = Binary(left, op_tok.value, right,
+                          line=op_tok.line, col=op_tok.col)
         return left
 
     def parse_mul_expr(self):
         left = self.parse_pow_expr()
         while self.match('SYMBOL') and self.current().value in ('*', '/', '//', '%'):
-            op = self.advance().value
+            op_tok = self.advance()
             right = self.parse_pow_expr()
-            left = Binary(left, op, right)
+            left = Binary(left, op_tok.value, right,
+                          line=op_tok.line, col=op_tok.col)
         return left
 
     def parse_pow_expr(self):
         left = self.parse_unary_expr()
         if self.match('SYMBOL', '**'):
-            self.advance()
+            op_tok = self.advance()
             right = self.parse_unary_expr()
-            return Binary(left, '**', right)
+            return Binary(left, '**', right, line=op_tok.line, col=op_tok.col)
         return left
 
     def parse_unary_expr(self):
         if self.match('SYMBOL') and self.current().value in ('-', '~'):
-            op = self.advance().value
+            op_tok = self.advance()
             right = self.parse_unary_expr()
-            return Unary(op, right)
+            return Unary(op_tok.value, right, line=op_tok.line, col=op_tok.col)
         if self.match('KEYWORD', 'not'):
-            op = self.advance().value
+            op_tok = self.advance()
             right = self.parse_unary_expr()
-            return Unary(op, right)
+            return Unary(op_tok.value, right, line=op_tok.line, col=op_tok.col)
         return self.parse_primary()
 
     def parse_primary(self):
@@ -1181,11 +1298,11 @@ class Parser:
 
         if tok.type in ('INT', 'FLOAT', 'DOUBLE', 'STRING'):
             self.advance()
-            node = Literal(tok.value)
+            node = Literal(tok.value, line=tok.line, col=tok.col)
             if self.match('SYMBOL', '.'):
-                self.advance()
-                attr = self.expect('IDENTIFIER').value
-                node = Attribute(node, attr)
+                dot = self.advance()
+                attr = self.expect('IDENTIFIER')
+                return Attribute(node, attr.value, line=dot.line, col=dot.col)
             return node
 
         if tok.type == 'SYMBOL' and tok.value == '(':
@@ -1205,17 +1322,16 @@ class Parser:
 
         if tok.type == 'KEYWORD' and tok.value == 'none':
             self.advance()
-            return Literal(None)
+            return Literal(None, line=tok.line, col=tok.col)
 
-        raise Exception(f"意外的 token: {tok.type} '{tok.value}'")
+        self.error(f"意外的 token: {tok.type} '{tok.value}'", tok)
 
     def parse_identifier_or_call(self):
         tok = self.advance()
         name = tok.value
 
-        # 函数调用
         if self.match('SYMBOL', '('):
-            self.advance()
+            lparen = self.advance()
             args = []
             kwargs = []
             while not self.match('SYMBOL', ')'):
@@ -1229,29 +1345,30 @@ class Parser:
                 if self.match('SYMBOL', ','):
                     self.advance()
             self.expect('SYMBOL', ')')
-            node = Call(Variable(name), args, kwargs)
+            func = Variable(name, line=tok.line, col=tok.col)
+            node = Call(func, args, kwargs, line=lparen.line, col=lparen.col)
             return self._parse_subscript_chain(node)
 
-        # 属性访问
         if self.match('SYMBOL', '.'):
-            self.advance()
-            attr = self.expect('IDENTIFIER').value
-            node = Attribute(Variable(name), attr)
+            dot = self.advance()
+            attr = self.expect('IDENTIFIER')
+            obj = Variable(name, line=tok.line, col=tok.col)
+            node = Attribute(obj, attr.value, line=dot.line, col=dot.col)
             return self._parse_subscript_chain(node)
 
-        node = Variable(name)
+        node = Variable(name, line=tok.line, col=tok.col)
         return self._parse_subscript_chain(node)
 
     def _parse_subscript_chain(self, node):
-        """解析连续下标访问，如 a[1][2]"""
         while self.match('SYMBOL', '['):
-            self.advance()
+            lb = self.advance()
             index = self.parse_expr()
             self.expect('SYMBOL', ']')
-            node = Subscript(node, index)
+            node = Subscript(node, index, line=lb.line, col=lb.col)
         return node
 
     def parse_list(self):
+        start = self.current()
         self.expect('SYMBOL', '[')
         elements = []
         if not self.match('SYMBOL', ']'):
@@ -1261,9 +1378,10 @@ class Parser:
                     break
                 self.advance()
         self.expect('SYMBOL', ']')
-        return ListExpr(elements)
+        return ListExpr(elements, line=start.line, col=start.col)
 
     def parse_dict(self):
+        start = self.current()
         self.expect('SYMBOL', '{')
         items = []
         if not self.match('SYMBOL', '}'):
@@ -1276,7 +1394,7 @@ class Parser:
                     break
                 self.advance()
         self.expect('SYMBOL', '}')
-        return DictExpr(items)
+        return DictExpr(items, line=start.line, col=start.col)
 
 
 class EclError(Exception):
@@ -1284,15 +1402,20 @@ class EclError(Exception):
 
 
 class TypeCheckError(Exception):
-    def __init__(self, message):
+    def __init__(self, message, line=0, col=0):
         self.message = message
-        super().__init__(message)
+        self.line = line
+        self.col = col
+        if line:
+            super().__init__(f"[行 {line}, 列 {col}] {message}")
+        else:
+            super().__init__(message)
 
 
 class TypeChecker:
     def __init__(self):
-        self.scope_stack = [{}]  # {name: {'type': str, 'annotated': bool}}
-        self.function_signatures = {}  # 函数名 -> [参数类型列表]
+        self.scope_stack = [{}]
+        self.function_signatures = {}
 
     def push_scope(self):
         self.scope_stack.append({})
@@ -1318,18 +1441,15 @@ class TypeChecker:
             return True
         if expected == 'any':
             return True
-        # 提取基础类型
         if '[' in expected:
             expected = expected.split('[')[0].strip()
         expected = expected.split()[0]
         return expected == actual
 
-    # ---------- 入口 ----------
     def check(self, program):
         for stmt in program.body:
             self.check_statement(stmt)
 
-    # ---------- 语句 ----------
     def check_statement(self, stmt):
         if isinstance(stmt, ExprStmt):
             self.check_expr(stmt.expr)
@@ -1355,27 +1475,24 @@ class TypeChecker:
                                MatchStmt, UsingStmt, DecoratorStmt)):
             pass
 
-    # ---------- 变量定义 ----------
     def check_define(self, stmt):
         value_type = self.check_expr(stmt.value) if stmt.value else None
         if stmt.type_name:
-            # 解析复合类型，如 "list[6] float"
             base_type, elem_type, length = self._parse_type(stmt.type_name)
-            print(base_type, elem_type, length)
-            # 1. 检查基础类型是否匹配
             if not self.check_type_compatible(base_type, value_type):
                 raise TypeCheckError(
                     f"类型错误: 变量 '{stmt.name}' 注解为 {stmt.type_name}，"
-                    f"但赋值表达式类型为 {value_type}"
+                    f"但赋值表达式类型为 {value_type}",
+                    line=stmt.line, col=stmt.col
                 )
 
-            # 2. 如果是列表且指定了元素类型或长度，检查列表内容
             if base_type == 'list' and isinstance(stmt.value, ListExpr):
                 elements = stmt.value.elements
                 if length is not None and len(elements) != length:
                     raise TypeCheckError(
                         f"类型错误: 列表 '{stmt.name}' 期望长度为 {length}，"
-                        f"但实际长度为 {len(elements)}"
+                        f"但实际长度为 {len(elements)}",
+                        line=stmt.line, col=stmt.col
                     )
                 if elem_type:
                     for i, elem in enumerate(elements):
@@ -1383,7 +1500,8 @@ class TypeChecker:
                         if not self.check_type_compatible(elem_type, elem_type_name):
                             raise TypeCheckError(
                                 f"类型错误: 列表 '{stmt.name}' 第 {i} 个元素期望 {elem_type}，"
-                                f"但得到 {elem_type_name}"
+                                f"但得到 {elem_type_name}",
+                                line=stmt.line, col=stmt.col
                             )
 
             self.declare(stmt.name, stmt.type_name, annotated=True)
@@ -1391,30 +1509,25 @@ class TypeChecker:
             self.declare(stmt.name, None, annotated=False)
 
     def _parse_type(self, type_name):
-        """解析复合类型，返回 (base_type, elem_type, length)"""
-        # 例如 "list[6] float" -> ("list", "float", 6)
-        # 例如 "list[float]" -> ("list", "float", None)
-        # 例如 "int" -> ("int", None, None)
         base_type = type_name
         elem_type = None
         length = None
 
-        # 找到第一个 [ 的位置
         bracket_pos = type_name.find('[')
         if bracket_pos != -1:
             base_type = type_name[:bracket_pos].strip()
-            # 找到对应的 ]
             end_pos = type_name.find(']', bracket_pos)
             if end_pos != -1:
                 inner = type_name[bracket_pos + 1:end_pos].strip()
-                # 判断是长度（数字）还是元素类型（字符串）
-                length = int(inner)
-                # 检查后面是否还有元素类型（如 "list[6] float"）
+                try:
+                    length = int(inner)
+                except ValueError:
+                    elem_type = inner
                 after = type_name[end_pos + 1:].strip()
                 if after:
                     elem_type = after
         elif any(base_type.startswith(i) for i in ["list", "tuple", "dict"]):
-            after = type_name[4:].strip()
+            after = base_type[4:].strip()
             if after:
                 elem_type = after
             base_type = base_type.strip().split()[0]
@@ -1422,11 +1535,9 @@ class TypeChecker:
             base_type = type_name
         return base_type, elem_type, length
 
-    # ---------- 函数 ----------
-
     def check_function_def(self, stmt):
         param_types = [p.get('type') for p in stmt.params]
-        self.function_signatures[stmt.name] = param_types
+        self.function_signatures[stmt.name] = (param_types, stmt.return_type)
 
         self.push_scope()
         for p in stmt.params:
@@ -1440,14 +1551,12 @@ class TypeChecker:
 
         self.pop_scope()
 
-    # ---------- 类 ----------
     def check_class_def(self, stmt):
         self.push_scope()
         for s in stmt.body:
             self.check_statement(s)
         self.pop_scope()
 
-    # ---------- 控制流 ----------
     def check_if(self, stmt):
         self.check_expr(stmt.condition)
         self.push_scope()
@@ -1492,7 +1601,6 @@ class TypeChecker:
             self.check_statement(s)
         self.pop_scope()
 
-    # ---------- 表达式 ----------
     def check_expr(self, expr):
         if expr is None:
             return None
@@ -1524,7 +1632,8 @@ class TypeChecker:
                 if not self.check_type_compatible(var_type, value_type):
                     raise TypeCheckError(
                         f"类型错误: 变量 '{expr.name}' 注解为 {var_type}，"
-                        f"但赋值表达式类型为 {value_type}"
+                        f"但赋值表达式类型为 {value_type}",
+                        line=expr.line, col=expr.col
                     )
             self.current_scope()[expr.name] = {
                 'type': value_type, 'annotated': annotated}
@@ -1537,7 +1646,7 @@ class TypeChecker:
             if isinstance(expr.func, Variable):
                 func_name = expr.func.name
                 if func_name in self.function_signatures:
-                    param_types = self.function_signatures[func_name]
+                    param_types, ret_type = self.function_signatures[func_name]
                     for i, arg in enumerate(expr.args):
                         if i < len(param_types) and param_types[i] is not None:
                             arg_type = self.check_expr(arg)
@@ -1545,7 +1654,8 @@ class TypeChecker:
                                 raise TypeCheckError(
                                     f"类型错误: 调用函数 '{func_name}' 时，"
                                     f"第 {i+1} 个参数期望 {param_types[i]}，"
-                                    f"但得到 {arg_type}"
+                                    f"但得到 {arg_type}",
+                                    line=expr.line, col=expr.col
                                 )
             return 'any'
 
@@ -1610,16 +1720,19 @@ class Cell:
 
 
 class EclException(Exception):
-    def __init__(self, exc_type, message, cause=None):
+    def __init__(self, exc_type, message, cause=None, line=0, col=0):
         self.exc_type = exc_type
         self.message = message
         self.cause = cause
-        super().__init__(message)
+        self.line = line
+        self.col = col
+        if line:
+            super().__init__(f"[行 {line}, 列 {col}] {exc_type}: {message}")
+        else:
+            super().__init__(f"{exc_type}: {message}")
 
     def __str__(self):
-        if self.cause:
-            return f"{self.exc_type}: {self.message} (from {self.cause})"
-        return f"{self.exc_type}: {self.message}"
+        return super().__str__()
 
 
 class Interpreter:
@@ -1738,6 +1851,12 @@ class Interpreter:
             if isinstance(stmt, LabelStmt):
                 self.labels[stmt.name] = i + offset
 
+    def error(self, msg, node=None, exc_type='RuntimeError'):
+        if node and hasattr(node, 'line') and hasattr(node, 'col'):
+            raise EclException(exc_type, msg, line=node.line, col=node.col)
+        else:
+            raise EclException(exc_type, msg)
+
     def eval_statement(self, stmt):
         if isinstance(stmt, ExprStmt):
             return self.eval_expr(stmt.expr)
@@ -1786,18 +1905,18 @@ class Interpreter:
     def eval_goto(self, stmt):
         label_name = stmt.label
         if label_name not in self.labels:
-            raise EclException('NameError', f"标签 '{label_name}' 未定义")
+            self.error(f"标签 '{label_name}' 未定义", stmt, 'NameError')
         self.current_pc = self.labels[label_name]
         return None
 
     def eval_define(self, stmt):
         if stmt.is_ref:
             if not isinstance(stmt.value, Variable):
-                raise EclException('TypeError', "ref 右侧必须是一个变量")
+                self.error("ref 右侧必须是一个变量", stmt, 'TypeError')
             target_name = stmt.value.name
             cell = self._get_cell(target_name)
             if cell is None:
-                raise EclException('NameError', f"变量 '{target_name}' 未定义")
+                self.error(f"变量 '{target_name}' 未定义", stmt, 'NameError')
             self.scope[stmt.name] = cell
             return None
         else:
@@ -1941,17 +2060,19 @@ class Interpreter:
     def eval_raise(self, stmt):
         exc = self.eval_expr(stmt.exception)
         if isinstance(exc, str):
-            raise EclException('Exception', exc)
+            raise EclException('Exception', exc, line=stmt.line, col=stmt.col)
         if isinstance(exc, dict):
             if '__class__' in exc:
                 exc_type = exc['__class__']
                 exc_msg = exc.get('message', str(exc))
-                raise EclException(exc_type, exc_msg)
+                raise EclException(exc_type, exc_msg,
+                                   line=stmt.line, col=stmt.col)
             else:
-                raise EclException('Exception', str(exc))
+                raise EclException('Exception', str(
+                    exc), line=stmt.line, col=stmt.col)
         if isinstance(exc, EclException):
             raise exc
-        raise EclException('Exception', str(exc))
+        raise EclException('Exception', str(exc), line=stmt.line, col=stmt.col)
 
     def eval_try(self, stmt):
         try:
@@ -1997,7 +2118,7 @@ class Interpreter:
         if isinstance(expr, Variable):
             cell = self._get_cell(expr.name)
             if cell is None:
-                raise EclException('NameError', f"未定义的变量: {expr.name}")
+                self.error(f"未定义的变量: {expr.name}", expr, 'NameError')
             return cell.value
         if isinstance(expr, Binary):
             return self.eval_binary(expr)
@@ -2022,7 +2143,7 @@ class Interpreter:
         if isinstance(expr, Subscript):
             return self.eval_subscript(expr)
 
-        raise EclException('TypeError', f"未知表达式类型: {type(expr)}")
+        self.error(f"未知表达式类型: {type(expr)}", expr, 'TypeError')
 
     def eval_subscript(self, expr):
         obj = self.eval_expr(expr.obj)
@@ -2030,11 +2151,9 @@ class Interpreter:
         try:
             return obj[index]
         except IndexError:
-            print(
-                'IndexError: ', f"索引 {index} 超出 {len(obj) - 1} 的范围", file=sys.stderr)
-            sys.exit(1)
+            self.error(f"索引 {index} 超出范围", expr, 'IndexError')
         except TypeError:
-            raise EclException('TypeError', f"对象不支持下标访问")
+            self.error("对象不支持下标访问", expr, 'TypeError')
 
     def eval_assign(self, expr):
         value = self.eval_expr(expr.value)
@@ -2049,9 +2168,9 @@ class Interpreter:
         left_cell = self._get_cell(expr.left)
         right_cell = self._get_cell(expr.right)
         if left_cell is None:
-            raise EclException('NameError', f"未定义的变量: {expr.left}")
+            self.error(f"未定义的变量: {expr.left}", expr, 'NameError')
         if right_cell is None:
-            raise EclException('NameError', f"未定义的变量: {expr.right}")
+            self.error(f"未定义的变量: {expr.right}", expr, 'NameError')
         left_cell.value, right_cell.value = right_cell.value, left_cell.value
         return None
 
@@ -2060,51 +2179,57 @@ class Interpreter:
         right = self.eval_expr(expr.right)
         op = expr.op
 
-        if op == '+':
-            return left + right
-        if op == '-':
-            return left - right
-        if op == '*':
-            return left * right
-        if op == '/':
-            return left / right
-        if op == '//':
-            return left // right
-        if op == '%':
-            return left % right
-        if op == '**':
-            return left ** right
-        if op == 'or':
-            return left or right
-        if op == 'and':
-            return left and right
-        if op == '==':
-            return left == right
-        if op == '!=':
-            return left != right
-        if op == '<':
-            return left < right
-        if op == '>':
-            return left > right
-        if op == '<=':
-            return left <= right
-        if op == '>=':
-            return left >= right
+        try:
+            if op == '+':
+                return left + right
+            if op == '-':
+                return left - right
+            if op == '*':
+                return left * right
+            if op == '/':
+                return left / right
+            if op == '//':
+                return left // right
+            if op == '%':
+                return left % right
+            if op == '**':
+                return left ** right
+            if op == 'or':
+                return left or right
+            if op == 'and':
+                return left and right
+            if op == '==':
+                return left == right
+            if op == '!=':
+                return left != right
+            if op == '<':
+                return left < right
+            if op == '>':
+                return left > right
+            if op == '<=':
+                return left <= right
+            if op == '>=':
+                return left >= right
+        except Exception as e:
+            self.error(str(e), expr, 'RuntimeError')
 
-        raise EclException('TypeError', f"未知运算符: {op}")
+        self.error(f"未知运算符: {op}", expr, 'TypeError')
 
     def eval_unary(self, expr):
         right = self.eval_expr(expr.right)
         op = expr.op
 
-        if op == '-':
-            return -right
-        if op == 'not':
-            return not right
-        if op == '~':
-            return ~right
+        try:
+            if op == '-':
+                return -right
+            if op == 'not':
+                return not right
+            if op == '~':
+                return ~right
+        except Exception as e:
+            self.error(str(e), expr, 'RuntimeError')
 
-        raise EclException('TypeError', f"未知一元运算符: {op}")
+        self.error(f"未知一元运算符: {op}", expr, 'TypeError')
 
     def eval_call(self, expr):
         func = self.eval_expr(expr.func)
@@ -2127,21 +2252,48 @@ class Interpreter:
             self._in_function = True
             self.return_value = None
 
-            for i, param in enumerate(func.params):
+            # 构建参数名到值的映射
+            param_names = [p['name'] for p in func.params]
+            # 先按位置填充
+            assigned = {}
+            for i, name in enumerate(param_names):
                 if i < len(arg_values):
-                    self.scope[param['name']] = Cell(arg_values[i])
-                elif param['default'] is not None:
-                    self.scope[param['name']] = Cell(
-                        self.eval_expr(param['default']))
+                    assigned[name] = arg_values[i]
+            # 关键字参数覆盖
+            for key, val in kw_values.items():
+                if key in param_names:
+                    assigned[key] = val
                 else:
-                    raise EclException('TypeError', f"缺少参数: {param['name']}")
+                    # 如果函数有 **kwargs 则接收
+                    if func.kwargs:
+                        if func.kwargs not in assigned:
+                            assigned[func.kwargs] = {}
+                        assigned[func.kwargs][key] = val
+                    else:
+                        self.error(f"未知关键字参数: {key}", expr, 'TypeError')
 
+            # 检查是否缺少参数
+            for param in func.params:
+                name = param['name']
+                if name not in assigned:
+                    # 检查是否有默认值
+                    if param['default'] is not None:
+                        assigned[name] = self.eval_expr(param['default'])
+                    else:
+                        self.error(f"缺少参数: {name}", expr, 'TypeError')
+
+            # 填充 *args
             if func.varargs:
                 start = len(func.params)
-                self.scope[func.varargs] = Cell(arg_values[start:])
+                assigned[func.varargs] = arg_values[start:]
 
-            if func.kwargs:
-                self.scope[func.kwargs] = Cell(kw_values)
+            # 填充 **kwargs（剩余的）
+            if func.kwargs and func.kwargs not in assigned:
+                assigned[func.kwargs] = {}
+
+            # 将 assigned 放入作用域
+            for name, val in assigned.items():
+                self.scope[name] = Cell(val)
 
             self.current_stmts = func.body
             self.current_pc = 0
@@ -2178,7 +2330,7 @@ class Interpreter:
         if isinstance(func, ClassDefStmt):
             return self._instantiate_class(func, expr)
 
-        raise EclException('TypeError', f"无法调用: {func}")
+        self.error(f"无法调用: {func}", expr, 'TypeError')
 
     def _instantiate_class(self, class_stmt, expr):
         instance = {'__class__': class_stmt.name}
@@ -2196,17 +2348,43 @@ class Interpreter:
 
             self.scope['self'] = Cell(instance)
 
-            for i, param in enumerate(init_func.params):
-                if param['name'] == 'self':
+            # 处理 __init__ 的参数（同样支持关键字）
+            arg_values = [self.eval_expr(arg) for arg in expr.args]
+            kw_values = {k: self.eval_expr(v) for k, v in expr.kwargs}
+            param_names = [p['name']
+                           for p in init_func.params if p['name'] != 'self']
+            assigned = {}
+            # 位置参数
+            pos_idx = 0
+            for p in init_func.params:
+                if p['name'] == 'self':
                     continue
-                if i - 1 < len(expr.args):
-                    value = self.eval_expr(expr.args[i - 1])
-                    self.scope[param['name']] = Cell(value)
-                elif param['default'] is not None:
-                    self.scope[param['name']] = Cell(
-                        self.eval_expr(param['default']))
+                if pos_idx < len(arg_values):
+                    assigned[p['name']] = arg_values[pos_idx]
+                    pos_idx += 1
+            # 关键字覆盖
+            for key, val in kw_values.items():
+                if key in param_names:
+                    assigned[key] = val
+                elif init_func.kwargs:
+                    if init_func.kwargs not in assigned:
+                        assigned[init_func.kwargs] = {}
+                    assigned[init_func.kwargs][key] = val
                 else:
-                    raise EclException('TypeError', f"缺少参数: {param['name']}")
+                    self.error(f"未知关键字参数: {key}", expr, 'TypeError')
+            # 检查缺省
+            for p in init_func.params:
+                name = p['name']
+                if name == 'self':
+                    continue
+                if name not in assigned:
+                    if p['default'] is not None:
+                        assigned[name] = self.eval_expr(p['default'])
+                    else:
+                        self.error(f"缺少参数: {name}", expr, 'TypeError')
+            # 放入作用域
+            for name, val in assigned.items():
+                self.scope[name] = Cell(val)
 
             for stmt in init_func.body:
                 self.eval_statement(stmt)
@@ -2230,7 +2408,7 @@ class Interpreter:
         if isinstance(obj, dict):
             if attr in obj:
                 return obj[attr]
-            raise EclException('AttributeError', f"属性不存在: {attr}")
+            self.error(f"属性不存在: {attr}", expr, 'AttributeError')
 
         if isinstance(obj, str):
             if attr == 'join':
@@ -2256,7 +2434,7 @@ class Interpreter:
                 if isinstance(method, FuncDefStmt):
                     return lambda *args, **kwargs: self._call_method(obj, method, args, kwargs)
 
-        raise EclException('AttributeError', f"无法访问属性: {attr}")
+        self.error(f"无法访问属性: {attr}", expr, 'AttributeError')
 
     def _string_join(self, obj, args):
         if len(args) == 0:
@@ -2273,17 +2451,38 @@ class Interpreter:
 
         self.scope['self'] = Cell(instance)
 
-        for i, param in enumerate(method.params):
-            if param['name'] == 'self':
+        # 类似函数调用的参数绑定
+        arg_values = [self.eval_expr(arg) for arg in args]
+        kw_values = {k: self.eval_expr(v) for k, v in kwargs}
+        param_names = [p['name'] for p in method.params if p['name'] != 'self']
+        assigned = {}
+        pos_idx = 0
+        for p in method.params:
+            if p['name'] == 'self':
                 continue
-            if i - 1 < len(args):
-                value = self.eval_expr(args[i - 1])
-                self.scope[param['name']] = Cell(value)
-            elif param['default'] is not None:
-                self.scope[param['name']] = Cell(
-                    self.eval_expr(param['default']))
+            if pos_idx < len(arg_values):
+                assigned[p['name']] = arg_values[pos_idx]
+                pos_idx += 1
+        for key, val in kw_values.items():
+            if key in param_names:
+                assigned[key] = val
+            elif method.kwargs:
+                if method.kwargs not in assigned:
+                    assigned[method.kwargs] = {}
+                assigned[method.kwargs][key] = val
             else:
-                raise EclException('TypeError', f"缺少参数: {param['name']}")
+                self.error(f"未知关键字参数: {key}", method, 'TypeError')
+        for p in method.params:
+            name = p['name']
+            if name == 'self':
+                continue
+            if name not in assigned:
+                if p['default'] is not None:
+                    assigned[name] = self.eval_expr(p['default'])
+                else:
+                    self.error(f"缺少参数: {name}", method, 'TypeError')
+        for name, val in assigned.items():
+            self.scope[name] = Cell(val)
 
         for stmt in method.body:
             self.eval_statement(stmt)
@@ -2345,15 +2544,16 @@ def run_ecl(code):
 
 
 if __name__ == '__main__':
-    code = '''int x <- 42
+    code = '''
+int x <- 42
 /// 打招呼, name是string类型, *ohters是其他的东西, str类型
-def greet(str name, str *others, **kwargs):
+def greet(str name, str *others, **kwargs) -> void:
     print("hello, " + name)
     for i in others:
         print(i)
     end
 end
-f(x) <- 1 if x < 1 else x * f(x - 1)
+f(int x) -> int <- 1 if x < 1 else x * f(x - 1)
 if x > 0:
     print("positive")
 else:
@@ -2396,11 +2596,12 @@ print(y)      # 输出 2
 list[5] int m <- [1, 2, 3, 4, 5]
 list[5] pi <- [3.1, 4, 1, 5, 9]
 ah <- ["a", "h"]
-list float f <- [1.2, 3.4, 1.0]
+list float d <- [1.2, 3.4, 1.0]
 print(m[2])
 num1 <- 100
 num2 <- 200
 num1 <-> num2
 print(num2, num1)
+print(f(x=10))
 '''
     run_ecl(code)
