@@ -1,0 +1,260 @@
+╔════════════════════╗
+║                    ║
+║      ECL 0.1.0     ║
+║ Easy Code Language ║
+║  简单, 兼容, 图形化 ║
+╚════════════════════╝
+
+变量定义:
+- a <- 7
+- 7 -> b
+- int x <- 9
+- 9 -> int x
+- int x <- 3.5 (x会自动变成int(3.5))
+- int x <- double b <- 9 (b会变成double(9), 链式调用, 允许)
+- a <-> b (允许的行为,  a 和 b 交换.)
+- define any x(创建, 但不赋值)
+
+类型: 
+int str float double bool/boolean list dict set tuple bytes code function null none any 以及多个修饰类型: public, private, const
+分别讲述:
+int, 整数, 范围±∞
+str, 字符串, 长度任意, 可迭代
+float, 默认的小数, 64位双精度
+double, 更长的小数, 128位高精度
+bool/boolean, 双值, True/true和false/false
+list, 任意长度, 也可以是固定长度: list[length] <- ...
+dict, 分为键和值, 键必须可以哈希(即不可变), 并且有序, 添加的键放到最后面
+set, 和list相似, 但是每一个值必须可哈希
+tuple, 和list相似, 但是不可变
+bytes, list的变体, 每一项都是0~255的整数
+code, 一段代码, 可以用run方法运行
+function, 一个函数, 可以直接()
+none, 空
+any, 以上任意类型, 主要用于类型不确定的时候
+null, 一个特殊类型, 不能赋值给变量, 用于没有指向的指针
+
+public, 属性装饰, 表示一个属性可以被外界访问
+private, 属性装饰, 表示一个属性是私有的, 可以根据using_private设置行为
+using_private
+- 为"none"时, 读取/写入私有属性不会有任何事
+- 为"warn"时, 读取/写入私有属性会抛出警告
+- 为"error"时, 读取/写入私有属性会直接报错
+
+const, 变量装饰, 如果一个const的变量被更改, 则直接抛出ConstChangingError
+
+字面量
+# 十进制（默认）
+a <- 42
+b <- -7
+c <- 0
+
+# 二进制（0b 前缀）
+d <- 0b1010      # 10
+e <- 0b11111111  # 255
+
+# 八进制（0o 前缀）
+f <- 0o755       # 493（文件权限经典写法）
+
+# 十六进制（0x 前缀）
+g <- 0xFF        # 255
+h <- 0xDEADBEEF  # 3735928559
+
+# 浮点数（默认 float）
+pi <- 3.14159
+negative <- -0.5
+
+# 高精度浮点数（double，d 后缀）
+pi_high <- 3.14159265358979323846d
+
+# 科学计数法
+large <- 1.5e10      # 15000000000（float）
+large_d <- 1.5e10d   # double
+
+# 下划线分隔（提高可读性）
+million <- 1_000_000
+binary_byte <- 0b1111_0000
+hex_color <- 0xFF_00_FF
+
+函数
+- def function(type1 arg1, type *args, type key=1, type value=2, type **kw) -> output_type:
+your code
+end
+
+- f(x) -> int <- x + 1
+函数的定义域
+如果需要使用全局的变量
+需要在前面加上global.
+如果要使用上层的变量
+需要在前面加上last.
+比如
+x <- 9
+def f(x):
+    print(global.x)
+    global.x = 10
+    print(x)
+    x = 10
+    print(x)
+    def inner():
+        last.x = 20
+    end
+    inner()
+    print(x)
+end
+f(23)
+print(x)
+输出: 
+9
+23
+10
+20
+10
+
+如果多个不同的函数, 函数名相同, 但是输入的类型不一样, 那么不会覆盖
+
+调用
+- function(arg1, arg, arg, ... key=1, value=3, a=3, b=4...)
+
+三元表达式
+define code x;
+define code y;
+define bool b;
+x if b else y
+如果 b 是 true, 返回x, 否则返回y
+
+控制结构
+- for i in Iterable:
+your code
+end
+遍历iterable的每一项, 并且每一次赋值到i
+
+- for i in 1..10:
+your code
+end
+遍历i从1~10(不包括10)
+
+- for i in 1..10+2:
+your code
+end
+遍历i从1~10(不包括10), 步长为2
+
+- for 10:
+your code
+end
+循环10次
+
+- for i in 1..=10:
+your code
+end
+遍历i从1~10(包括10)
+
+while bool:
+your code
+end
+一直运行, 只到 bool 不成立
+
+continue, 忽略后面的代码, 直接进入下一轮循环
+
+break, 直接跳出最近一层的循环
+
+goto+label: goto会跳转到最近的和自己goto的相同的名字的label, 不能跳出函数, 不能进入for循环
+
+if, 
+if bool:
+your code
+end
+elif bool:
+your code
+end
+else:
+your code
+end
+如果if或elif相邻的bool为true, 则运行code并跳出
+否则继续
+如果前面没有为true并且到了else, 则直接运行code
+
+和变量有关的其他东西
+define允许任意类型
+ref引用
+如
+ref a <- b
+被引用的变量删除的时候, 如果存在还未删除的引用, 引用的变量改成引用 null 并抛出警告
+
+类
+类的第一个参数必须是self
+继承:
+class a(b, c):
+    def __init__(self):
+        b.func(self, ...) # 调用 b 的方法
+        c.func(self, ...) # 调用 c 的方法
+        using b
+        func(self, ...) # 调用 b 的方法
+        using c
+        func(self, ...) # 调用 c 的方法
+        self.func(...)  # 调用 a 的方法
+        using self # 报错
+    end
+end
+
+魔法方法
+a / b     → 调用 a.__div__(b)
+a + b     → 调用 a.__add__(b)
+a - b     → 调用 a.__sub__(b)
+a * b     → 调用 a.__mul__(b)
+a % b     → 调用 a.__mod__(b)
+a ** b    → 调用 a.__pow__(b)
+a // b    → 调用 a.__floordiv__(b)
+-a        → 调用 a.__neg__()
+~a        → 调用 a.__invert__()
+a | b     → 调用 a.__bor__(b)
+a & b     → 调用 a.__band__(b)
+a or b    → 调用 先检查a.__bool__()是否为true, 是就返回a, 不是就返回a.__or__(b)
+a and b   → 调用 先检查a.__bool__()是否为false, 是就返回a, 不是就返回a.__and__(b)
+a >> b    → 调用 a.__lshift__(b)
+a ^ b     → 调用 a.__xor__(b)
+a << b    → 调用 a.__rshift__(b)
+xx(a)     → 调用 a.__xx__(), 其中xx是一个类
+v <- a    → 调用 a.__copy__() 并赋值到v, 否则变成v是a的引用
+a <-> b   → 调用 a.__swap__(b)
+a(*args)  → 调用 a.__call__(*args)
+a[b:c:..] → 调用 a.__getitem__("b:c:...")
+a[b] <- v → 调用 a.__setitem__("b", v)
+a == b    → 调用 a.__eq__(b)
+a <= b    → 调用 a.__le__(b)
+a != b    → 调用 a.__ne__(b)
+a => b    → 调用 a.__ge__(b)
+a > b     → 调用 a.__gt__(b)
+a < b     → 调用 a.__lt__(b)
+
+唯一规则：
+左操作数的类决定行为, 左操作数没有实现或返回 null, 则调用右操作数的反向方法(即b.__rxx__(a))
+仅限于两个操作数的方法
+
+导入模块
+
+- import module
+module.xx()
+
+- import module as xx
+xx.xx()
+
+- from module import xx
+xx()
+- from module import xx as yy
+yy()
+
+错误捕获
+try: # 可能会报错的代码
+...
+except Error_name as e: # 报Error_name的时候应该做的代码, 其中e是报错的具体内容
+...
+else: # 如果没有报错做的代码
+...
+finally: # 不管有没有报错都运行的代码
+...
+end
+
+特殊提示
+1, 末尾的分号忽略, 中间的分号不忽略, 多个分号按一个计算
+2, 单行注释用 #, 多行注释用 /* ... */, 文档用///
+
