@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Optional, Any, Union
 import sys
+from double import LongDouble
 
 
 class Token:
@@ -24,7 +25,6 @@ class LexerError(Exception):
         super().__init__(f"[行 {line}, 列 {col}] {message}")
 
 
-# 基类不作为 dataclass，仅作为类型标记
 class Expr:
     pass
 
@@ -190,7 +190,6 @@ class DefineStmt(Stmt):
 @dataclass
 class FuncDefStmt(Stmt):
     name: str
-    # [{'name': str, 'type': Optional[str], 'default': Optional[Expr]}]
     params: List[dict]
     varargs: Optional[str]
     varargs_type: Optional[str]
@@ -339,6 +338,54 @@ class Program:
     body: List[Stmt]
 
 
+# ==================== 内置类型列表（手写，不依赖 Python） ====================
+BUILTIN_TYPES = {
+    'int', 'str', 'float', 'double', 'bool', 'boolean',
+    'list', 'dict', 'set', 'tuple', 'bytes',
+    'code', 'function', 'any', 'none', 'null'
+}
+
+# 类型兼容映射：key 类型可以赋值给 value 类型
+TYPE_COMPATIBLE = {
+    'int': {'int', 'float', 'double', 'any'},
+    'float': {'float', 'double', 'any'},
+    'double': {'double', 'any'},
+    'str': {'str', 'any'},
+    'bool': {'bool', 'boolean', 'any'},
+    'boolean': {'bool', 'boolean', 'any'},
+    'list': {'list', 'any'},
+    'dict': {'dict', 'any'},
+    'set': {'set', 'any'},
+    'tuple': {'tuple', 'any'},
+    'bytes': {'bytes', 'any'},
+    'code': {'code', 'any'},
+    'function': {'function', 'any'},
+    'none': {'none', 'any'},
+    'null': {'null', 'none', 'any'},
+    'any': {'any'},
+}
+
+# 类型转换映射（从 ECL 类型到 Python 类型）
+TYPE_TO_PYTHON = {
+    'int': int,
+    'str': str,
+    'float': float,
+    'double': LongDouble,
+    'bool': bool,
+    'boolean': bool,
+    'list': list,
+    'dict': dict,
+    'set': set,
+    'tuple': tuple,
+    'bytes': bytes,
+    'code': None,      # 代码块类型，不转换
+    'function': None,  # 函数类型，不转换
+    'any': None,       # 任意类型，不转换
+    'none': None,      # none 类型，不转换
+    'null': None,      # null 类型，不转换
+}
+
+
 def split_token(code):
     tokens = []
     i = 0
@@ -478,7 +525,7 @@ def split_token(code):
         elif is_float:
             if is_double:
                 clean = raw.rstrip('dD')
-                return ('DOUBLE', float(clean), start_col)
+                return ('DOUBLE', LongDouble(float(clean)), start_col)
             return ('FLOAT', float(raw), start_col)
         else:
             return ('INT', int(raw), start_col)
@@ -610,8 +657,6 @@ class Parser:
 
     def parse_statement(self):
         tok = self.current()
-        types = {'int', 'str', 'float', 'double', 'bool', 'boolean', 'list',
-                 'dict', 'set', 'tuple', 'bytes', 'code', 'function', 'any'}
 
         if not tok:
             return None
@@ -620,7 +665,7 @@ class Parser:
             return None
 
         # ---- 类型声明 ----
-        if tok.value in types:
+        if tok.value in BUILTIN_TYPES:
             base_type = self.advance().value
             type_params = []
             if self.match('SYMBOL', '['):
@@ -635,10 +680,8 @@ class Parser:
                 self.expect('SYMBOL', ']')
 
             elem_type = None
-            builtin_types = {'int', 'str', 'float', 'double', 'bool', 'boolean',
-                             'list', 'dict', 'set', 'tuple', 'bytes', 'code', 'function', 'any'}
             tok2 = self.current()
-            if tok2.type == 'TYPE' or (tok2.type == 'IDENTIFIER' and tok2.value in builtin_types):
+            if tok2.type == 'TYPE' or (tok2.type == 'IDENTIFIER' and tok2.value in BUILTIN_TYPES):
                 elem_type = self.advance().value
 
             name = self.expect('IDENTIFIER')
@@ -710,7 +753,7 @@ class Parser:
         if tok.value == 'const':
             return self.parse_define(is_const=True)
 
-        # ---- 单行函数检测（支持类型注解和默认值） ----
+        # ---- 单行函数检测 ----
         if tok.type == 'IDENTIFIER' and self.peek() and self.peek().value == '(':
             saved = self.pos
             name = self.advance().value
@@ -718,18 +761,11 @@ class Parser:
 
             params = []
             defaults = {}
-            builtin_types = {'int', 'str', 'float', 'double', 'bool', 'boolean',
-                             'list', 'dict', 'set', 'tuple', 'bytes', 'code', 'function', 'any'}
             while not self.match('SYMBOL', ')'):
-                # 保存当前参数解析位置
-                param_saved = self.pos
                 ptype = None
-                # 检查类型注解
-                if self.match('IDENTIFIER') and self.current().value in builtin_types:
+                if self.match('IDENTIFIER') and self.current().value in BUILTIN_TYPES:
                     ptype = self.advance().value
-                # 期望参数名（标识符）
                 if not self.match('IDENTIFIER'):
-                    # 不是标识符，说明不是函数定义，回退
                     self.pos = saved
                     return self.parse_expression_statement()
                 pname = self.advance().value
@@ -772,7 +808,6 @@ class Parser:
                 )
                 return node
             else:
-                # 不是函数定义，回退
                 self.pos = saved
                 return self.parse_expression_statement()
 
@@ -793,11 +828,6 @@ class Parser:
         name = self.expect('IDENTIFIER')
         self.expect('SYMBOL', '(')
 
-        builtin_types = {
-            'int', 'str', 'float', 'double', 'bool', 'boolean',
-            'list', 'dict', 'set', 'tuple', 'bytes', 'code', 'function', 'any'
-        }
-
         params = []
         varargs = None
         varargs_type = None
@@ -809,7 +839,7 @@ class Parser:
             ptype = None
             pname = None
             tok = self.current()
-            if tok.type == 'IDENTIFIER' and tok.value in builtin_types:
+            if tok.type == 'IDENTIFIER' and tok.value in BUILTIN_TYPES:
                 ptype = self.advance().value
 
             if self.match('SYMBOL', '**'):
@@ -1151,9 +1181,7 @@ class Parser:
         kw = self.advance().value
         type_name = None
         tok = self.current()
-        builtin_types = {'int', 'str', 'float', 'double', 'bool', 'boolean',
-                         'list', 'dict', 'set', 'tuple', 'bytes', 'code', 'function', 'any'}
-        if tok.type == 'TYPE' or (tok.type == 'IDENTIFIER' and tok.value in builtin_types):
+        if tok.type == 'TYPE' or (tok.type == 'IDENTIFIER' and tok.value in BUILTIN_TYPES):
             type_name = self.advance().value
 
         name = self.expect('IDENTIFIER')
@@ -1217,7 +1245,9 @@ class Parser:
             right = self.parse_expr()
             if isinstance(left, Variable):
                 return Assign(left.name, right, is_ref=False, line=op_tok.line, col=op_tok.col)
-            self.error("赋值左侧必须是变量", op_tok)
+            elif isinstance(left, Attribute):
+                return Assign(left, right, is_ref=False, line=op_tok.line, col=op_tok.col)
+            self.error("赋值左侧必须是变量或属性", op_tok)
 
         if self.match('SYMBOL', '<->'):
             op_tok = self.advance()
@@ -1324,6 +1354,10 @@ class Parser:
             self.advance()
             return Literal(None, line=tok.line, col=tok.col)
 
+        if tok.type == 'KEYWORD' and tok.value == 'null':
+            self.advance()
+            return Literal(None, line=tok.line, col=tok.col)
+
         self.error(f"意外的 token: {tok.type} '{tok.value}'", tok)
 
     def parse_identifier_or_call(self):
@@ -1416,6 +1450,7 @@ class TypeChecker:
     def __init__(self):
         self.scope_stack = [{}]
         self.function_signatures = {}
+        self.in_method = False
 
     def push_scope(self):
         self.scope_stack.append({})
@@ -1427,6 +1462,8 @@ class TypeChecker:
         return self.scope_stack[-1]
 
     def lookup(self, name):
+        if name == 'self' and self.in_method:
+            return 'object', False
         for scope in reversed(self.scope_stack):
             if name in scope:
                 return scope[name]['type'], scope[name]['annotated']
@@ -1436,15 +1473,82 @@ class TypeChecker:
         self.current_scope()[name] = {
             'type': type_name, 'annotated': annotated}
 
+    # ========== 类型兼容判断（手写所有类型） ==========
     def check_type_compatible(self, expected, actual):
+        """检查 actual 类型是否可以赋值给 expected 类型"""
         if expected is None or actual is None:
             return True
-        if expected == 'any':
+        if expected == 'any' or actual == 'any':
             return True
-        if '[' in expected:
-            expected = expected.split('[')[0].strip()
-        expected = expected.split()[0]
-        return expected == actual
+
+        # 提取基础类型（去掉复合类型后缀）
+        exp_base = self._extract_base_type(expected)
+        act_base = self._extract_base_type(actual)
+
+        # 直接相等
+        if exp_base == act_base:
+            return True
+
+        # 别名检查
+        if exp_base == 'bool' and act_base == 'boolean':
+            return True
+        if exp_base == 'boolean' and act_base == 'bool':
+            return True
+
+        # none 和 null 可互换
+        if exp_base in ('none', 'null') and act_base in ('none', 'null'):
+            return True
+
+        # 数值类型升级：int -> float -> double
+        if exp_base == 'float' and act_base == 'int':
+            return True
+        if exp_base == 'double' and act_base in ('int', 'float'):
+            return True
+
+        # 检查兼容映射
+        if act_base in TYPE_COMPATIBLE:
+            return exp_base in TYPE_COMPATIBLE[act_base]
+
+        return False
+
+    def _extract_base_type(self, type_name):
+        """提取基础类型，去除复合类型后缀"""
+        if type_name is None:
+            return None
+        # 处理 "list[5] int" -> "list"
+        base = type_name.split('[')[0].strip()
+        # 处理 "list int" -> "list"
+        base = base.split()[0] if ' ' in base else base
+        return base
+
+    def _parse_type(self, type_name):
+        """解析复合类型，返回 (base_type, elem_type, length)"""
+        base_type = type_name
+        elem_type = None
+        length = None
+
+        bracket_pos = type_name.find('[')
+        if bracket_pos != -1:
+            base_type = type_name[:bracket_pos].strip()
+            end_pos = type_name.find(']', bracket_pos)
+            if end_pos != -1:
+                inner = type_name[bracket_pos + 1:end_pos].strip()
+                try:
+                    length = int(inner)
+                except ValueError:
+                    elem_type = inner
+                after = type_name[end_pos + 1:].strip()
+                if after:
+                    elem_type = after
+        elif ' ' in type_name:
+            parts = type_name.split()
+            base_type = parts[0]
+            if len(parts) > 1:
+                elem_type = parts[1]
+        else:
+            base_type = type_name
+
+        return base_type, elem_type, length
 
     def check(self, program):
         for stmt in program.body:
@@ -1479,6 +1583,8 @@ class TypeChecker:
         value_type = self.check_expr(stmt.value) if stmt.value else None
         if stmt.type_name:
             base_type, elem_type, length = self._parse_type(stmt.type_name)
+
+            # 检查基础类型兼容
             if not self.check_type_compatible(base_type, value_type):
                 raise TypeCheckError(
                     f"类型错误: 变量 '{stmt.name}' 注解为 {stmt.type_name}，"
@@ -1486,6 +1592,7 @@ class TypeChecker:
                     line=stmt.line, col=stmt.col
                 )
 
+            # 检查列表长度和元素类型
             if base_type == 'list' and isinstance(stmt.value, ListExpr):
                 elements = stmt.value.elements
                 if length is not None and len(elements) != length:
@@ -1508,33 +1615,6 @@ class TypeChecker:
         else:
             self.declare(stmt.name, None, annotated=False)
 
-    def _parse_type(self, type_name):
-        base_type = type_name
-        elem_type = None
-        length = None
-
-        bracket_pos = type_name.find('[')
-        if bracket_pos != -1:
-            base_type = type_name[:bracket_pos].strip()
-            end_pos = type_name.find(']', bracket_pos)
-            if end_pos != -1:
-                inner = type_name[bracket_pos + 1:end_pos].strip()
-                try:
-                    length = int(inner)
-                except ValueError:
-                    elem_type = inner
-                after = type_name[end_pos + 1:].strip()
-                if after:
-                    elem_type = after
-        elif any(base_type.startswith(i) for i in ["list", "tuple", "dict"]):
-            after = base_type[4:].strip()
-            if after:
-                elem_type = after
-            base_type = base_type.strip().split()[0]
-        else:
-            base_type = type_name
-        return base_type, elem_type, length
-
     def check_function_def(self, stmt):
         param_types = [p.get('type') for p in stmt.params]
         self.function_signatures[stmt.name] = (param_types, stmt.return_type)
@@ -1546,15 +1626,25 @@ class TypeChecker:
             else:
                 self.declare(p['name'], None, annotated=False)
 
+        old_in_method = self.in_method
+        self.in_method = False
         for s in stmt.body:
             self.check_statement(s)
+        self.in_method = old_in_method
 
         self.pop_scope()
 
     def check_class_def(self, stmt):
         self.push_scope()
+        old_in_method = self.in_method
         for s in stmt.body:
-            self.check_statement(s)
+            if isinstance(s, FuncDefStmt):
+                self.in_method = True
+                self.check_function_def(s)
+                self.in_method = False
+            else:
+                self.check_statement(s)
+        self.in_method = old_in_method
         self.pop_scope()
 
     def check_if(self, stmt):
@@ -1601,6 +1691,7 @@ class TypeChecker:
             self.check_statement(s)
         self.pop_scope()
 
+    # ========== 表达式类型推断（手写所有类型） ==========
     def check_expr(self, expr):
         if expr is None:
             return None
@@ -1609,34 +1700,78 @@ class TypeChecker:
             return self._infer_type(expr.value)
 
         if isinstance(expr, Variable):
+            if expr.name == 'self':
+                return 'object'
             var_type, annotated = self.lookup(expr.name)
             return var_type
 
         if isinstance(expr, Binary):
             left_type = self.check_expr(expr.left)
             right_type = self.check_expr(expr.right)
-            if left_type and right_type:
+            op = expr.op
+
+            # 数值运算
+            if op in ('+', '-', '*', '/', '//', '%', '**'):
                 if left_type in ('int', 'float', 'double') and right_type in ('int', 'float', 'double'):
-                    return left_type
-                if left_type == 'str' and right_type == 'str' and expr.op == '+':
+                    # 结果类型取较宽的类型
+                    if 'double' in (left_type, right_type):
+                        return 'double'
+                    if 'float' in (left_type, right_type):
+                        return 'float'
+                    return 'int'
+                if op == '+' and left_type == 'str' and right_type == 'str':
                     return 'str'
+
+            # 比较运算返回 bool
+            if op in ('==', '!=', '<', '>', '<=', '>='):
+                return 'bool'
+
+            # 逻辑运算
+            if op in ('or', 'and'):
+                return 'bool'
+
             return None
 
         if isinstance(expr, Unary):
-            return self.check_expr(expr.right)
+            right_type = self.check_expr(expr.right)
+            if expr.op in ('-', '~'):
+                if right_type in ('int', 'float', 'double'):
+                    return right_type
+            if expr.op == 'not':
+                return 'bool'
+            return right_type
 
         if isinstance(expr, Assign):
             value_type = self.check_expr(expr.value)
-            var_type, annotated = self.lookup(expr.name)
-            if annotated and value_type:
-                if not self.check_type_compatible(var_type, value_type):
-                    raise TypeCheckError(
-                        f"类型错误: 变量 '{expr.name}' 注解为 {var_type}，"
-                        f"但赋值表达式类型为 {value_type}",
-                        line=expr.line, col=expr.col
-                    )
-            self.current_scope()[expr.name] = {
-                'type': value_type, 'annotated': annotated}
+
+            if isinstance(expr.name, str):
+                var_type, annotated = self.lookup(expr.name)
+                if annotated and value_type:
+                    if not self.check_type_compatible(var_type, value_type):
+                        raise TypeCheckError(
+                            f"类型错误: 变量 '{expr.name}' 注解为 {var_type}，"
+                            f"但赋值表达式类型为 {value_type}",
+                            line=expr.line, col=expr.col
+                        )
+                self.current_scope()[expr.name] = {
+                    'type': value_type, 'annotated': annotated}
+            elif isinstance(expr.name, Attribute):
+                obj = expr.name.obj
+                if isinstance(obj, Variable):
+                    if obj.name != 'self':
+                        var_type, _ = self.lookup(obj.name)
+                        if var_type is None:
+                            raise TypeCheckError(
+                                f"未定义的对象: {obj.name}",
+                                line=expr.line, col=expr.col
+                            )
+                self.check_expr(expr.name.obj)
+            else:
+                raise TypeCheckError(
+                    f"无效的赋值目标: {type(expr.name)}",
+                    line=expr.line, col=expr.col
+                )
+
             return value_type
 
         if isinstance(expr, Call):
@@ -1657,6 +1792,7 @@ class TypeChecker:
                                     f"但得到 {arg_type}",
                                     line=expr.line, col=expr.col
                                 )
+                    return ret_type if ret_type is not None else 'any'
             return 'any'
 
         if isinstance(expr, Attribute):
@@ -1680,6 +1816,16 @@ class TypeChecker:
                 self.check_expr(v)
             return 'dict'
 
+        if isinstance(expr, SetExpr):
+            for e in expr.elements:
+                self.check_expr(e)
+            return 'set'
+
+        if isinstance(expr, TupleExpr):
+            for e in expr.elements:
+                self.check_expr(e)
+            return 'tuple'
+
         if isinstance(expr, RangeExpr):
             self.check_expr(expr.start)
             self.check_expr(expr.end)
@@ -1694,22 +1840,37 @@ class TypeChecker:
 
         return None
 
+    # ========== 值类型推断（手写所有类型） ==========
     def _infer_type(self, value):
+        """根据值的 Python 类型推断 ECL 类型（手写映射）"""
+        if value is None:
+            return 'none'
+        if isinstance(value, bool):
+            return 'bool'
         if isinstance(value, int):
             return 'int'
         if isinstance(value, float):
             return 'float'
         if isinstance(value, str):
             return 'str'
-        if isinstance(value, bool):
-            return 'bool'
         if isinstance(value, list):
             return 'list'
         if isinstance(value, dict):
             return 'dict'
-        if value is None:
-            return 'none'
-        return None
+        if isinstance(value, set):
+            return 'set'
+        if isinstance(value, tuple):
+            return 'tuple'
+        if isinstance(value, bytes):
+            return 'bytes'
+        if isinstance(value, (FuncDefStmt, ClassDefStmt)):
+            return 'function'
+        if isinstance(value, LongDouble):
+            return 'double'
+        # 代码块/函数对象
+        if hasattr(value, '__call__'):
+            return 'function'
+        return 'any'
 
 
 class Cell:
@@ -1751,12 +1912,14 @@ class Interpreter:
         self.current_pc = 0
         self.in_loop = False
 
+        # 类型转换映射（手写所有类型）
         self.type_map = {
             'int': int,
             'str': str,
             'float': float,
-            'double': float,
+            'double': LongDouble,
             'bool': bool,
+            'boolean': bool,
             'list': list,
             'dict': dict,
             'set': set,
@@ -1792,17 +1955,23 @@ class Interpreter:
         self.globals['int'] = Cell(self._builtin_int)
         self.globals['float'] = Cell(self._builtin_float)
         self.globals['bool'] = Cell(self._builtin_bool)
+        self.globals['list'] = Cell(self._builtin_list)
+        self.globals['dict'] = Cell(self._builtin_dict)
 
     def convert_type(self, value, target_type):
         if target_type is None or target_type == 'any':
             return value
-        if target_type not in self.type_map:
+        if target_type in ('none', 'null'):
+            return None
+        # 提取基础类型
+        base_type = target_type.split('[')[0].strip().split()[0]
+        if base_type not in self.type_map:
             return value
         try:
-            return self.type_map[target_type](value)
+            return self.type_map[base_type](value)
         except (ValueError, TypeError):
             raise EclException(
-                'TypeError', f"无法将 {type(value).__name__} 转换为 {target_type}")
+                'TypeError', f"无法将 {type(value).__name__} 转换为 {base_type}")
 
     def _builtin_print(self, *args):
         for arg in args:
@@ -1817,22 +1986,80 @@ class Interpreter:
         return input(str(prompt))
 
     def _builtin_type(self, obj):
-        return type(obj).__name__
+        if obj is None:
+            return 'none'
+        if isinstance(obj, bool):
+            return 'bool'
+        if isinstance(obj, int):
+            return 'int'
+        if isinstance(obj, float):
+            return 'float'
+        if isinstance(obj, str):
+            return 'str'
+        if isinstance(obj, list):
+            return 'list'
+        if isinstance(obj, dict):
+            return 'dict'
+        if isinstance(obj, set):
+            return 'set'
+        if isinstance(obj, tuple):
+            return 'tuple'
+        if isinstance(obj, bytes):
+            return 'bytes'
+        return 'any'
 
     def _builtin_len(self, obj):
-        return len(obj)
+        if obj is None:
+            return 0
+        if isinstance(obj, (str, list, dict, set, tuple, bytes)):
+            return len(obj)
+        raise EclException('TypeError', f"len() 不支持类型: {type(obj).__name__}")
 
     def _builtin_str(self, obj):
+        if obj is None:
+            return "none"
         return str(obj)
 
     def _builtin_int(self, obj):
-        return int(obj)
+        if obj is None:
+            return 0
+        if isinstance(obj, bool):
+            return 1 if obj else 0
+        try:
+            return int(obj)
+        except (ValueError, TypeError):
+            raise EclException(
+                'TypeError', f"无法将 {type(obj).__name__} 转换为 int")
 
     def _builtin_float(self, obj):
-        return float(obj)
+        if obj is None:
+            return 0.0
+        try:
+            return float(obj)
+        except (ValueError, TypeError):
+            raise EclException(
+                'TypeError', f"无法将 {type(obj).__name__} 转换为 float")
 
     def _builtin_bool(self, obj):
+        if obj is None:
+            return False
         return bool(obj)
+
+    def _builtin_list(self, *args):
+        if len(args) == 0:
+            return []
+        if len(args) == 1 and hasattr(args[0], '__iter__'):
+            return list(args[0])
+        return list(args)
+
+    def _builtin_dict(self, *args, **kwargs):
+        if len(args) == 0:
+            return {}
+        if len(args) == 1 and isinstance(args[0], dict):
+            return args[0].copy()
+        if len(args) == 1 and hasattr(args[0], '__iter__'):
+            return dict(args[0])
+        return dict(*args, **kwargs)
 
     def interpret(self, program):
         self.current_stmts = program.body
@@ -2136,6 +2363,10 @@ class Interpreter:
             return self.eval_list(expr)
         if isinstance(expr, DictExpr):
             return self.eval_dict(expr)
+        if isinstance(expr, SetExpr):
+            return self.eval_set(expr)
+        if isinstance(expr, TupleExpr):
+            return self.eval_tuple(expr)
         if isinstance(expr, RangeExpr):
             return self.eval_range(expr)
         if isinstance(expr, IfExpr):
@@ -2157,11 +2388,23 @@ class Interpreter:
 
     def eval_assign(self, expr):
         value = self.eval_expr(expr.value)
-        cell = self._get_cell(expr.name)
-        if cell is None:
-            self.scope[expr.name] = Cell(value)
+
+        if isinstance(expr.name, str):
+            cell = self._get_cell(expr.name)
+            if cell is None:
+                self.scope[expr.name] = Cell(value)
+            else:
+                cell.value = value
+        elif isinstance(expr.name, Attribute):
+            obj = self.eval_expr(expr.name.obj)
+            attr = expr.name.attr
+            if isinstance(obj, dict):
+                obj[attr] = value
+            else:
+                self.error(f"无法设置属性: {attr}", expr, 'TypeError')
         else:
-            cell.value = value
+            self.error("无效的赋值目标", expr, 'TypeError')
+
         return value
 
     def eval_swap(self, expr):
@@ -2175,9 +2418,37 @@ class Interpreter:
         return None
 
     def eval_binary(self, expr):
-        left = self.eval_expr(expr.left)
-        right = self.eval_expr(expr.right)
+        left = self.eval_expr(expr.left)   # 只先求值左操作数
         op = expr.op
+
+        # 操作符到方法名的映射
+        op_methods = {
+            '+': '__add__',
+            '-': '__sub__',
+            '*': '__mul__',
+            '/': '__truediv__',
+            '//': '__floordiv__',
+            '%': '__mod__',
+            '**': '__pow__',
+            '==': '__eq__',
+            '!=': '__ne__',
+            '<': '__lt__',
+            '>': '__gt__',
+            '<=': '__le__',
+            '>=': '__ge__',
+        }
+
+        # 检查左操作数是否定义了对应的操作符重载方法
+        if op in op_methods:
+            method_name = op_methods[op]
+            if isinstance(left, dict) and '__methods__' in left:
+                if method_name in left['__methods__']:
+                    method = left['__methods__'][method_name]
+                    # 传递未求值的右操作数 AST 节点，让 _call_method 内部求值
+                    return self._call_method(left, method, [expr.right], {})
+
+        # 如果没有操作符重载，再求值右操作数并执行普通运算
+        right = self.eval_expr(expr.right)
 
         try:
             if op == '+':
@@ -2234,11 +2505,13 @@ class Interpreter:
     def eval_call(self, expr):
         func = self.eval_expr(expr.func)
 
+        # 内置函数
         if callable(func):
             args = [self.eval_expr(arg) for arg in expr.args]
             kwargs = {k: self.eval_expr(v) for k, v in expr.kwargs}
             return func(*args, **kwargs)
 
+        # 用户定义函数
         if isinstance(func, FuncDefStmt):
             arg_values = [self.eval_expr(arg) for arg in expr.args]
             kw_values = {k: self.eval_expr(v) for k, v in expr.kwargs}
@@ -2252,19 +2525,19 @@ class Interpreter:
             self._in_function = True
             self.return_value = None
 
-            # 构建参数名到值的映射
             param_names = [p['name'] for p in func.params]
-            # 先按位置填充
             assigned = {}
+
+            # 位置参数
             for i, name in enumerate(param_names):
                 if i < len(arg_values):
                     assigned[name] = arg_values[i]
-            # 关键字参数覆盖
+
+            # 关键字参数
             for key, val in kw_values.items():
                 if key in param_names:
                     assigned[key] = val
                 else:
-                    # 如果函数有 **kwargs 则接收
                     if func.kwargs:
                         if func.kwargs not in assigned:
                             assigned[func.kwargs] = {}
@@ -2272,26 +2545,24 @@ class Interpreter:
                     else:
                         self.error(f"未知关键字参数: {key}", expr, 'TypeError')
 
-            # 检查是否缺少参数
+            # 检查缺省
             for param in func.params:
                 name = param['name']
                 if name not in assigned:
-                    # 检查是否有默认值
                     if param['default'] is not None:
                         assigned[name] = self.eval_expr(param['default'])
                     else:
                         self.error(f"缺少参数: {name}", expr, 'TypeError')
 
-            # 填充 *args
+            # *args
             if func.varargs:
                 start = len(func.params)
                 assigned[func.varargs] = arg_values[start:]
 
-            # 填充 **kwargs（剩余的）
+            # **kwargs
             if func.kwargs and func.kwargs not in assigned:
                 assigned[func.kwargs] = {}
 
-            # 将 assigned 放入作用域
             for name, val in assigned.items():
                 self.scope[name] = Cell(val)
 
@@ -2327,19 +2598,20 @@ class Interpreter:
 
             return result
 
+        # 类实例化
         if isinstance(func, ClassDefStmt):
             return self._instantiate_class(func, expr)
 
         self.error(f"无法调用: {func}", expr, 'TypeError')
 
     def _instantiate_class(self, class_stmt, expr):
-        instance = {'__class__': class_stmt.name}
+        instance = {'__class__': class_stmt.name, '__methods__': {}}
 
-        init_func = None
         for stmt in class_stmt.body:
-            if isinstance(stmt, FuncDefStmt) and stmt.name == '__init__':
-                init_func = stmt
-                break
+            if isinstance(stmt, FuncDefStmt):
+                instance['__methods__'][stmt.name] = stmt
+
+        init_func = instance['__methods__'].get('__init__')
 
         if init_func:
             old_scope = self.scope
@@ -2348,43 +2620,21 @@ class Interpreter:
 
             self.scope['self'] = Cell(instance)
 
-            # 处理 __init__ 的参数（同样支持关键字）
             arg_values = [self.eval_expr(arg) for arg in expr.args]
             kw_values = {k: self.eval_expr(v) for k, v in expr.kwargs}
-            param_names = [p['name']
-                           for p in init_func.params if p['name'] != 'self']
-            assigned = {}
-            # 位置参数
-            pos_idx = 0
-            for p in init_func.params:
-                if p['name'] == 'self':
-                    continue
-                if pos_idx < len(arg_values):
-                    assigned[p['name']] = arg_values[pos_idx]
-                    pos_idx += 1
-            # 关键字覆盖
-            for key, val in kw_values.items():
-                if key in param_names:
-                    assigned[key] = val
-                elif init_func.kwargs:
-                    if init_func.kwargs not in assigned:
-                        assigned[init_func.kwargs] = {}
-                    assigned[init_func.kwargs][key] = val
+
+            init_params = [p for p in init_func.params if p['name'] != 'self']
+
+            for i, param in enumerate(init_params):
+                if i < len(arg_values):
+                    self.scope[param['name']] = Cell(arg_values[i])
+                elif param['name'] in kw_values:
+                    self.scope[param['name']] = Cell(kw_values[param['name']])
+                elif param['default'] is not None:
+                    self.scope[param['name']] = Cell(
+                        self.eval_expr(param['default']))
                 else:
-                    self.error(f"未知关键字参数: {key}", expr, 'TypeError')
-            # 检查缺省
-            for p in init_func.params:
-                name = p['name']
-                if name == 'self':
-                    continue
-                if name not in assigned:
-                    if p['default'] is not None:
-                        assigned[name] = self.eval_expr(p['default'])
-                    else:
-                        self.error(f"缺少参数: {name}", expr, 'TypeError')
-            # 放入作用域
-            for name, val in assigned.items():
-                self.scope[name] = Cell(val)
+                    self.error(f"缺少参数: {param['name']}", expr, 'TypeError')
 
             for stmt in init_func.body:
                 self.eval_statement(stmt)
@@ -2395,44 +2645,81 @@ class Interpreter:
             self._in_function = False
             self.scope = old_scope
 
-        for stmt in class_stmt.body:
-            if isinstance(stmt, FuncDefStmt) and stmt.name != '__init__':
-                instance[stmt.name] = stmt
-
         return instance
 
     def eval_attribute(self, expr):
         obj = self.eval_expr(expr.obj)
         attr = expr.attr
 
+        # 类实例
+        if isinstance(obj, dict) and '__methods__' in obj:
+            if attr in obj['__methods__']:
+                method = obj['__methods__'][attr]
+                return lambda *args, **kwargs: self._call_method(obj, method, args, kwargs)
+            if attr in obj:
+                return obj[attr]
+            self.error(f"属性不存在: {attr}", expr, 'AttributeError')
+
+        # 普通字典
         if isinstance(obj, dict):
             if attr in obj:
                 return obj[attr]
             self.error(f"属性不存在: {attr}", expr, 'AttributeError')
 
+        # 字符串方法
         if isinstance(obj, str):
             if attr == 'join':
                 return lambda *args: self._string_join(obj, args)
+            if attr == 'split':
+                return lambda sep=None: obj.split(sep)
+            if attr == 'replace':
+                return lambda old, new: obj.replace(old, new)
+            if attr == 'upper':
+                return lambda: obj.upper()
+            if attr == 'lower':
+                return lambda: obj.lower()
+            if attr == 'strip':
+                return lambda: obj.strip()
             if hasattr(obj, attr):
                 return getattr(obj, attr)
 
+        # 列表方法
         if isinstance(obj, list):
             if attr == 'append':
                 return lambda x: obj.append(x)
             if attr == 'pop':
-                return lambda: obj.pop()
+                return lambda idx=-1: obj.pop(idx)
             if attr == 'remove':
                 return lambda x: obj.remove(x)
             if attr == 'clear':
                 return lambda: obj.clear()
+            if attr == 'insert':
+                return lambda i, x: obj.insert(i, x)
+            if attr == 'extend':
+                return lambda items: obj.extend(items)
+            if attr == 'index':
+                return lambda x: obj.index(x)
+            if attr == 'count':
+                return lambda x: obj.count(x)
+            if attr == 'sort':
+                return lambda: obj.sort()
+            if attr == 'reverse':
+                return lambda: obj.reverse()
 
+        # 字典方法
         if isinstance(obj, dict):
-            if attr in obj:
-                return obj[attr]
-            if attr in obj:
-                method = obj[attr]
-                if isinstance(method, FuncDefStmt):
-                    return lambda *args, **kwargs: self._call_method(obj, method, args, kwargs)
+            if attr == 'keys':
+                return lambda: list(obj.keys())
+            if attr == 'values':
+                return lambda: list(obj.values())
+            if attr == 'items':
+                return lambda: list(obj.items())
+            if attr == 'get':
+                return lambda key, default=None: obj.get(key, default)
+            if attr == 'pop':
+                return lambda key, default=None: obj.pop(key, default)
+            if attr == 'update':
+                return lambda other: obj.update(other)
 
         self.error(f"无法访问属性: {attr}", expr, 'AttributeError')
 
@@ -2451,38 +2738,20 @@ class Interpreter:
 
         self.scope['self'] = Cell(instance)
 
-        # 类似函数调用的参数绑定
         arg_values = [self.eval_expr(arg) for arg in args]
         kw_values = {k: self.eval_expr(v) for k, v in kwargs}
-        param_names = [p['name'] for p in method.params if p['name'] != 'self']
-        assigned = {}
-        pos_idx = 0
-        for p in method.params:
-            if p['name'] == 'self':
-                continue
-            if pos_idx < len(arg_values):
-                assigned[p['name']] = arg_values[pos_idx]
-                pos_idx += 1
-        for key, val in kw_values.items():
-            if key in param_names:
-                assigned[key] = val
-            elif method.kwargs:
-                if method.kwargs not in assigned:
-                    assigned[method.kwargs] = {}
-                assigned[method.kwargs][key] = val
+        method_params = [p for p in method.params if p['name'] != 'self']
+
+        for i, param in enumerate(method_params):
+            if i < len(arg_values):
+                self.scope[param['name']] = Cell(arg_values[i])
+            elif param['name'] in kw_values:
+                self.scope[param['name']] = Cell(kw_values[param['name']])
+            elif param['default'] is not None:
+                self.scope[param['name']] = Cell(
+                    self.eval_expr(param['default']))
             else:
-                self.error(f"未知关键字参数: {key}", method, 'TypeError')
-        for p in method.params:
-            name = p['name']
-            if name == 'self':
-                continue
-            if name not in assigned:
-                if p['default'] is not None:
-                    assigned[name] = self.eval_expr(p['default'])
-                else:
-                    self.error(f"缺少参数: {name}", method, 'TypeError')
-        for name, val in assigned.items():
-            self.scope[name] = Cell(val)
+                self.error(f"缺少参数: {param['name']}", method, 'TypeError')
 
         for stmt in method.body:
             self.eval_statement(stmt)
@@ -2500,6 +2769,12 @@ class Interpreter:
 
     def eval_dict(self, expr):
         return {self.eval_expr(k): self.eval_expr(v) for k, v in expr.items}
+
+    def eval_set(self, expr):
+        return {self.eval_expr(e) for e in expr.elements}
+
+    def eval_tuple(self, expr):
+        return tuple(self.eval_expr(e) for e in expr.elements)
 
     def eval_range(self, expr):
         start = self.eval_expr(expr.start)
@@ -2544,8 +2819,7 @@ def run_ecl(code):
 
 
 if __name__ == '__main__':
-    code = '''
-int x <- 42
+    code = '''int x <- 42
 /// 打招呼, name是string类型, *ohters是其他的东西, str类型
 def greet(str name, str *others, **kwargs) -> void:
     print("hello, " + name)
@@ -2602,6 +2876,19 @@ num1 <- 100
 num2 <- 200
 num1 <-> num2
 print(num2, num1)
-print(f(x=10))
+result <- f(x=10)
+print(result)
+class A:
+    def __init__(self, float value):
+        self.value <- value
+        print(value)
+    end
+    def __mul__(self, other):
+        return self.value * other.value
+    end
+end
+my <- A(3.14d)
+other <- A(2.71)
+print(my * other)
 '''
     run_ecl(code)
