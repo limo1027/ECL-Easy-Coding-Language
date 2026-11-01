@@ -8,7 +8,6 @@ ECL (Easy Control Language) 解释器完整实现
 from dataclasses import dataclass, field
 from typing import List, Optional, Any, Union
 import sys
-import warnings
 
 # ============================================================================
 # 词法分析
@@ -112,6 +111,23 @@ def split_token(code):
                 advance()
         raise LexerError("字符串未闭合", start_line, start_col)
 
+    def read_code_string():
+        start_line, start_col = line, col
+        advance()  # 跳过 `
+        value = []
+        while i < n:
+            ch = current()
+            if ch == '`':
+                advance()
+                return ''.join(value), start_line, start_col
+            if ch == '\n':
+                value.append('\n')
+                advance_line()
+            else:
+                value.append(ch)
+                advance()
+        raise LexerError("代码字符串未闭合", start_line, start_col)
+
     def read_number():
         start_i = i
         start_line, start_col = line, col
@@ -183,6 +199,8 @@ def split_token(code):
             advance_line()
             continue
 
+        if ch == ";":
+            tokens.append(Token('SYMBOL', ";", line, col))
         # 注释
         if ch == '#':
             while i < n and current() != '\n':
@@ -226,6 +244,10 @@ def split_token(code):
             tokens.append(Token(typ, value, sl, sc))
             continue
 
+        if ch == '`':
+            value, sl, sc = read_code_string()
+            tokens.append(Token('CODE_STRING', value, sl, sc))
+            continue
         matched = False
         for op in OPERATORS:
             if code[i:i + len(op)] == op:
@@ -374,7 +396,13 @@ class RangeExpr(Expr):
     col: int = 0
 
 
+@dataclass
+class CodeLiteral(Expr):
+    source: str
+    line: int = 0
+    col: int = 0
 # ---------- 语句 ----------
+
 
 @dataclass
 class ExprStmt(Stmt):
@@ -546,8 +574,86 @@ class Program:
 
 
 # ============================================================================
+# 代码块工具
+# ============================================================================
+
+class GlobalView:
+    """code 对象执行后返回的全局视图"""
+
+    def __init__(self, cells, interpreter):
+        self.cells = cells          # dict[str, Cell]
+        self.interpreter = interpreter
+
+    def get(self, name):
+        if name in self.cells:
+            return self.cells[name].value
+        return None
+
+    def set(self, name, value):
+        if name in self.cells:
+            self.cells[name].value = value
+        else:
+            self.cells[name] = Cell(value)
+
+    def keys(self):
+        return list(self.cells.keys())
+
+    def __repr__(self):
+        return f"<global {list(self.cells.keys())}>"
+
+
+class CodeObject:
+    """code 类型的值：延迟解析的代码块"""
+
+    def __init__(self, source, scope, interpreter, line=0, col=0):
+        self.source = source
+        self.scope = scope
+        self.interpreter = interpreter
+        self.line = line
+        self.col = col
+        self._stmts = None
+
+    def _parse(self):
+        if self._stmts is not None:
+            return self._stmts
+        try:
+            tokens = split_token(self.source)
+            parser = Parser(tokens)
+            program = parser.parse()
+        except (LexerError, ParseError) as e:
+            self.interpreter.error(
+                f"code 对象解析失败: {e}", self, 'SyntaxError')
+        self._stmts = program.body
+        return self._stmts
+
+    def run(self):
+        stmts = self._parse()
+        # code 自己的 globals（独立作用域）
+        code_globals = {}
+        # 父作用域：定义时的 scope（闭包）
+        parent_scope = dict(self.scope)
+        # 合并父作用域到 code_globals（浅拷贝，Cell 共享）
+        for k, v in parent_scope.items():
+            code_globals[k] = v
+        # 再合并 interpreter.globals（如果 scope 里没有）
+        for k, v in self.interpreter.globals.items():
+            if k not in code_globals:
+                code_globals[k] = v
+
+        self.interpreter.exec_block(stmts, code_globals)
+
+        # 返回新增的变量（排除父作用域和全局的）
+        new_cells = {k: v for k, v in code_globals.items()
+                     if k not in parent_scope and k not in self.interpreter.globals}
+        return GlobalView(new_cells, self.interpreter)
+
+    def __repr__(self):
+        return f"<code object at {self.line}:{self.col}>"
+
+# ============================================================================
 # 语法分析
 # ============================================================================
+
 
 class ParseError(Exception):
     def __init__(self, message, line, col):
@@ -608,9 +714,17 @@ class Parser:
     def parse(self):
         stmts = []
         while not self.match('EOF'):
+            # 跳过开头的分号
+            while self.match('SYMBOL', ';'):
+                self.advance()
+            if self.match('EOF'):
+                break
             stmt = self.parse_statement()
             if stmt is not None:
                 stmts.append(stmt)
+            # 跳过语句后的分号（一个或多个）
+            while self.match('SYMBOL', ';'):
+                self.advance()
         return Program(stmts)
 
     # ---------- 语句 ----------
@@ -639,6 +753,21 @@ class Parser:
         # 关键字语句
         if tok.type == 'KEYWORD':
             kw = tok.value
+            if kw == 'global':
+                # 判断是 global g <- expr 还是 global.x <- expr
+                nxt = self.peek()
+                if nxt and nxt.type == 'IDENTIFIER' and self.peek(2) and self.peek(2).value == '<-':
+                    # global g <- expr：变量声明
+                    self.advance()  # 跳过 global
+                    name = self.expect('IDENTIFIER')
+                    self.expect('SYMBOL', '<-')
+                    value = self.parse_expr()
+                    return DefineStmt(name.value, 'global', value,
+                                      is_ref=False, is_const=False,
+                                      line=tok.line, col=tok.col)
+                else:
+                    # global.x <- expr 或 global.x：作用域限定，作为表达式处理
+                    return self.parse_expression_statement()
             if kw == 'if':
                 return self.parse_if()
             if kw == 'for':
@@ -1349,6 +1478,10 @@ class Parser:
             node = Literal(value, line=tok.line, col=tok.col)
             return self._parse_postfix(node)
 
+        if tok.type == 'KEYWORD' and tok.value == 'global':
+            self.advance()
+            node = Variable('global', line=tok.line, col=tok.col)
+            return self._parse_postfix(node)
         # 括号表达式
         if tok.type == 'SYMBOL' and tok.value == '(':
             self.advance()
@@ -1368,6 +1501,10 @@ class Parser:
         if tok.type in ('IDENTIFIER', 'TYPE'):
             return self.parse_identifier_or_call()
 
+        # 代码字符串 `...`
+        if tok.type == 'CODE_STRING':
+            self.advance()
+            return CodeLiteral(tok.value, line=tok.line, col=tok.col)
         self.error(f"意外的 token: {tok.type} {tok.value!r}", tok)
 
     def parse_identifier_or_call(self):
@@ -1710,6 +1847,10 @@ class Checker:
                     line=stmt.line, col=stmt.col)
             self.declare(stmt.name, target['type'], annotated=True,
                          node=stmt)
+            if target['is_const']:
+                raise CheckError(
+                    f"不能 ref 常量 '{stmt.value.name}'",
+                    line=stmt.line, col=stmt.col)
             return
 
         value_type = self.check_expr(stmt.value) if stmt.value else None
@@ -1823,16 +1964,31 @@ class Checker:
         if expr is None:
             return None
 
+        if isinstance(expr, CodeLiteral):
+            # 尝试解析，只报语法错误（不报未定义变量）
+            try:
+                tokens = split_token(expr.source)
+                parser = Parser(tokens)
+                parser.parse()
+            except (LexerError, ParseError) as e:
+                raise CheckError(
+                    f"code 字符串语法错误: {e}",
+                    line=expr.line, col=expr.col)
+            return 'code'
         if isinstance(expr, Literal):
             return self._infer(expr.value)
 
         if isinstance(expr, Variable):
+            # 先查变量作用域
             info = self.lookup(expr.name)
-            if info is None:
-                raise CheckError(
-                    f"未定义的变量: '{expr.name}'",
-                    line=expr.line, col=expr.col)
-            return info['type']
+            if info is not None:
+                return info['type']
+            # 再查函数签名（函数名可以作为值传递）
+            if expr.name in self.function_signatures:
+                return 'function'
+            raise CheckError(
+                f"未定义的变量: '{expr.name}'",
+                line=expr.line, col=expr.col)
 
         if isinstance(expr, Binary):
             lt = self.check_expr(expr.left)
@@ -1995,10 +2151,11 @@ class Checker:
 
 
 class Cell:
-    __slots__ = ('value',)
+    __slots__ = ('value', 'is_const')
 
-    def __init__(self, value=None):
+    def __init__(self, value=None, is_const=False):
         self.value = value
+        self.is_const = is_const
 
 
 class EclException(Exception):
@@ -2076,6 +2233,10 @@ class EclInstance:
         return f"<{self.cls.name} object>"
 
 
+class ConstChangingError(EclException):
+    pass
+
+
 class Interpreter:
     def __init__(self):
         self.globals = {}
@@ -2107,7 +2268,7 @@ class Interpreter:
     @staticmethod
     def _make_exception_class(name):
         class _Exc:
-            __name__ = name
+            exc_type = name
 
             def __init__(self, msg=""):
                 self.message = str(msg)
@@ -2156,13 +2317,17 @@ class Interpreter:
         raise EclException(exc_type, msg)
 
     # ---------- 作用域 ----------
-
-    def lookup_cell(self, name, node=None, scope_stack=None):
+    def lookup_cell(self, name, node=None, scope_stack=None, for_write=False):
         if scope_stack is None:
             scope_stack = [self.globals]
-        for scope in reversed(scope_stack):
+        for scope in scope_stack:
             if name in scope:
-                return scope[name]
+                cell = scope[name]
+                if for_write and cell.is_const:
+                    self.error(
+                        f"不能重新赋值常量 '{name}'",
+                        node, 'ConstChangingError')
+                return cell
         self.error(f"未定义的变量: '{name}'", node, 'NameError')
 
     def lookup_value(self, name, node=None, scope_stack=None):
@@ -2179,14 +2344,15 @@ class Interpreter:
         except ReturnSignal:
             pass
 
-    def exec_block(self, stmts, scope):
-        pc = 0
-        labels = {}
-        # 收集标签
+    def exec_block(self, stmts, scope, parent_labels=None):
+        labels = dict(parent_labels) if parent_labels else {}
+        local_labels = set()
         for i, s in enumerate(stmts):
             if isinstance(s, LabelStmt):
                 labels[s.name] = i
+                local_labels.add(s.name)
 
+        pc = 0
         while pc < len(stmts):
             stmt = stmts[pc]
             try:
@@ -2195,10 +2361,11 @@ class Interpreter:
                     pc = result_pc
                     continue
             except GotoSignal as g:
-                if g.label in labels:
+                if g.label in local_labels:
                     pc = labels[g.label] + 1
                     continue
-                self.error(f"未找到标签: '{g.label}'", stmt, 'NameError')
+                # 不在当前 block，向上抛
+                raise
             pc += 1
 
     def exec_statement(self, stmt, scope, labels, pc):
@@ -2281,9 +2448,15 @@ class Interpreter:
 
         if isinstance(stmt, RaiseStmt):
             exc_val = self.eval_expr(stmt.exception, scope)
-            exc_type = type(exc_val).__name__ if not isinstance(exc_val, dict) \
-                else exc_val.get('__class__', 'Exception')
-            msg = getattr(exc_val, 'message', str(exc_val))
+            if hasattr(exc_val, 'exc_type'):
+                exc_type = exc_val.exc_type
+                msg = getattr(exc_val, 'message', str(exc_val))
+            elif isinstance(exc_val, dict):
+                exc_type = exc_val.get('__class__', 'Exception')
+                msg = exc_val.get('message', str(exc_val))
+            else:
+                exc_type = type(exc_val).__name__
+                msg = str(exc_val)
             raise EclException(exc_type, msg, line=stmt.line, col=stmt.col)
 
         if isinstance(stmt, TryStmt):
@@ -2299,15 +2472,14 @@ class Interpreter:
     def exec_define(self, stmt, scope):
         if stmt.is_ref:
             if stmt.value is None:
-                cell = Cell(None)
+                scope[stmt.name] = Cell(None, is_const=stmt.is_const)
+                return None
+            if isinstance(stmt.value, Variable):
+                cell = self.lookup_cell(
+                    stmt.value.name, stmt.value, [scope, self.globals])
+                scope[stmt.name] = cell          # ← 共享 Cell，不是新建
             else:
-                # ref 必须指向一个已存在的变量
-                if isinstance(stmt.value, Variable):
-                    cell = self.lookup_cell(stmt.value.name, stmt.value, [
-                                            scope, self.globals])
-                else:
-                    self.error("ref 必须绑定到变量", stmt)
-            scope[stmt.name] = cell
+                self.error("ref 必须绑定到变量", stmt)
             return None
 
         if stmt.value is None:
@@ -2493,6 +2665,9 @@ class Interpreter:
             self.error(str(e), expr, type(e).__name__)
 
     def _eval_expr(self, expr, scope):
+        if isinstance(expr, CodeLiteral):
+            return CodeObject(expr.source, scope, self,
+                              line=expr.line, col=expr.col)
         if isinstance(expr, Literal):
             return expr.value
 
@@ -2517,12 +2692,31 @@ class Interpreter:
         if isinstance(expr, Assign):
             val = self.eval_expr(expr.value, scope)
             target = expr.name
+
             if isinstance(target, Variable):
                 cell = self.lookup_cell(
-                    target.name, expr, [scope, self.globals])
+                    target.name, expr, [scope, self.globals], for_write=True)
                 cell.value = val
+
             elif isinstance(target, Attribute):
                 obj = self.eval_expr(target.obj, scope)
+                if isinstance(target, Attribute):
+                    obj = self.eval_expr(target.obj, scope)
+                    if isinstance(target.obj, Variable) and target.obj.name == 'global':
+                        # global.x <- val
+                        cell = self.lookup_cell(
+                            target.attr, expr, [self.globals])
+                        cell.value = val
+                    if isinstance(obj, GlobalView):
+                        obj.set(target.attr, val)
+                    elif isinstance(obj, EclInstance):
+                        obj.attrs[target.attr] = val
+                    else:
+                        try:
+                            setattr(obj, target.attr, val)
+                        except AttributeError:
+                            self.error(
+                                f"对象不支持属性赋值: {target.attr}", expr, 'AttributeError')
                 if isinstance(obj, EclInstance):
                     obj.attrs[target.attr] = val
                 else:
@@ -2534,8 +2728,10 @@ class Interpreter:
             return val
 
         if isinstance(expr, Swap):
-            lc = self.lookup_cell(expr.left, expr, [scope, self.globals])
-            rc = self.lookup_cell(expr.right, expr, [scope, self.globals])
+            lc = self.lookup_cell(
+                expr.left, expr, [scope, self.globals], for_write=True)
+            rc = self.lookup_cell(
+                expr.right, expr, [scope, self.globals], for_write=True)
             lc.value, rc.value = rc.value, lc.value
             return None
 
@@ -2667,7 +2863,24 @@ class Interpreter:
 
     def eval_attribute(self, expr, scope):
         obj = self.eval_expr(expr.obj, scope)
-
+        if isinstance(obj, CodeObject):
+            if expr.attr == 'run':
+                return obj.run
+            self.error(f"code 对象没有属性 '{expr.attr}'", expr, 'AttributeError')
+        if isinstance(expr.obj, Variable) and expr.obj.name == 'global':
+            # 读取 global.x
+            cell = self.lookup_cell(expr.attr, expr, [self.globals])
+            return cell.value
+        if isinstance(obj, GlobalView):
+            if expr.attr == 'keys':
+                return obj.keys
+            if expr.attr == 'get':
+                return lambda name, default=None: obj.cells[name].value if name in obj.cells else default
+            if expr.attr == 'has':
+                return lambda name: name in obj.cells
+            if expr.attr in obj.cells:
+                return obj.cells[expr.attr].value
+            self.error(f"global 对象没有变量 '{expr.attr}'", expr, 'AttributeError')
         if isinstance(obj, EclInstance):
             if expr.attr in obj.attrs:
                 return obj.attrs[expr.attr]
@@ -2694,7 +2907,6 @@ class Interpreter:
 # ============================================================================
 # 顶层入口
 # ============================================================================
-
 def run_ecl(code, verbose=False):
     """完整执行 ECL 代码：词法 -> 语法 -> 类型检查 -> 执行"""
     try:
@@ -2707,6 +2919,8 @@ def run_ecl(code, verbose=False):
         parser = Parser(tokens)
         program = parser.parse()
     except ParseError as e:
+        import traceback
+        traceback.print_exc()
         print(f"语法错误: {e}", file=sys.stderr)
         return None
 
@@ -2744,7 +2958,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--input',
         type=pathlib.Path,
-        help='输入文件路径（例如 data.json）'  # 这里就是 help
+        help='输入文件路径（例如 code.ecl）'  # 这里就是 help
     )
     args = parser.parse_args()
     if args.input:
