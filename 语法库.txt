@@ -37,6 +37,7 @@ null, 一个特殊类型, 不能赋值给变量, 用于没有指向的指针
 public, 属性装饰, 表示一个属性可以被外界访问
 private, 属性装饰, 表示一个属性是私有的, 可以根据using_private设置行为
 using_private
+- 用const using_private <- ...使用
 - 为"none"时, 读取/写入私有属性不会有任何事
 - 为"warn"时, 读取/写入私有属性会抛出警告
 - 为"error"时, 读取/写入私有属性会直接报错
@@ -44,34 +45,34 @@ using_private
 const, 变量装饰, 如果一个const的变量被更改, 则直接抛出ConstChangingError
 
 字面量
-# 十进制（默认）
+# 十进制(默认)
 a <- 42
 b <- -7
 c <- 0
 
-# 二进制（0b 前缀）
+# 二进制(0b 前缀)
 d <- 0b1010      # 10
 e <- 0b11111111  # 255
 
-# 八进制（0o 前缀）
-f <- 0o755       # 493（文件权限经典写法）
+# 八进制(0o 前缀)
+f <- 0o755       # 493 (文件权限经典写法)
 
-# 十六进制（0x 前缀）
+# 十六进制(0x 前缀)
 g <- 0xFF        # 255
 h <- 0xDEADBEEF  # 3735928559
 
-# 浮点数（默认 float）
+# 浮点数(默认 float)
 pi <- 3.14159
 negative <- -0.5
 
-# 高精度浮点数（double，d 后缀）
+# 高精度浮点数(double，d 后缀)
 pi_high <- 3.14159265358979323846d
 
 # 科学计数法
-large <- 1.5e10      # 15000000000（float）
+large <- 1.5e10      # 15000000000(float)
 large_d <- 1.5e10d   # double
 
-# 下划线分隔（提高可读性）
+# 下划线分隔(提高可读性)
 million <- 1_000_000
 binary_byte <- 0b1111_0000
 hex_color <- 0xFF_00_FF
@@ -210,9 +211,9 @@ a | b     → 调用 a.__bor__(b)
 a & b     → 调用 a.__band__(b)
 a or b    → 调用 先检查a.__bool__()是否为true, 是就返回a, 不是就返回a.__or__(b)
 a and b   → 调用 先检查a.__bool__()是否为false, 是就返回a, 不是就返回a.__and__(b)
-a >> b    → 调用 a.__lshift__(b)
+a << b    → 调用 a.__lshift__(b)
 a ^ b     → 调用 a.__xor__(b)
-a << b    → 调用 a.__rshift__(b)
+a >> b    → 调用 a.__rshift__(b)
 xx(a)     → 调用 a.__xx__(), 其中xx是一个类
 v <- a    → 调用 a.__copy__() 并赋值到v, 否则变成v是a的引用
 a <-> b   → 调用 a.__swap__(b)

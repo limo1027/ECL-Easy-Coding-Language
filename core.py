@@ -9,6 +9,26 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Any, Union
 import sys
 
+_NO_MAGIC = object()
+
+
+class NullValue:
+    """ECL 的 null：表示没有实现 / 没有指向"""
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self):
+        return "null"
+
+    def __bool__(self):
+        return False
+
+
+NULL = NullValue()
 # ============================================================================
 # 词法分析
 # ============================================================================
@@ -55,6 +75,26 @@ BUILTIN_TYPES = {
     'list', 'dict', 'set', 'tuple', 'bytes', 'code', 'function', 'any', 'none',
 }
 
+MAGIC_METHODS = {
+    '+': '__add__', '-': '__sub__', '*': '__mul__',
+    '/': '__div__', '//': '__floordiv__', '%': '__mod__',
+    '**': '__pow__', '<': '__lt__', '>': '__gt__',
+    '<=': '__le__', '>=': '__ge__', '=': '__eq__',
+    '==': '__eq__', '!=': '__ne__', '|': '__bor__',
+    '&': '__band__', '^': '__xor__', '<<': '__lshift__',
+    '>>': '__rshift__',
+}
+
+REVERSE_METHODS = {
+    '+': '__radd__', '-': '__rsub__', '*': '__rmul__',
+    '/': '__rdiv__', '//': '__rfloordiv__', '%': '__rmod__',
+    '**': '__rpow__', '<': '__gt__', '>': '__lt__',
+    '<=': '__ge__', '>=': '__le__', '=': '__eq__',
+    '==': '__eq__', '!=': '__ne__', '|': '__ror__',
+    '&': '__rand__', '^': '__rxor__', '<<': '__rlshift__',
+    '>>': '__rrshift__',
+}
+
 
 def split_token(code):
     """将源码切分为 Token 列表"""
@@ -89,9 +129,21 @@ def split_token(code):
     def read_string(quote):
         start_line, start_col = line, col
         advance()
-        value = []
+        segments = []          # [(kind, content, line, col), ...]
+        buf = []
+        seg_line, seg_col = line, col
+
+        def flush_buf():
+            nonlocal buf, seg_line, seg_col
+            if buf:
+                segments.append(('str', ''.join(buf), seg_line, seg_col))
+                buf = []
+                seg_line, seg_col = line, col
+
         while i < n:
             ch = current()
+
+            # 反斜杠转义（保留原有：\n \t \r \\ \" \' \0）
             if ch == '\\':
                 advance()
                 if i >= n:
@@ -99,16 +151,77 @@ def split_token(code):
                 esc = current()
                 mapping = {'n': '\n', 't': '\t', 'r': '\r', '\\': '\\',
                            '"': '"', "'": "'", '0': '\0'}
-                value.append(mapping.get(esc, '\\' + esc))
+                buf.append(mapping.get(esc, '\\' + esc))
                 advance()
+
+            # $$ 转义，输出字面 $
+            elif ch == '$' and peek() == '$':
+                buf.append('$')
+                advance()   # 跳过第一个 $
+                advance()   # 跳过第二个 $
+
+            # $name 变量插值
+            elif ch == '$' and (peek().isalpha() or peek() == '_'):
+                flush_buf()
+                advance()   # 跳过 $
+                name_start = i
+                name_line, name_col = line, col
+                while i < n and (current().isalnum() or current() == '_'):
+                    advance()
+                segments.append(
+                    ('var', code[name_start:i], name_line, name_col))
+                seg_line, seg_col = line, col
+
+            # ${expr} 表达式插值
+            elif ch == '$' and peek() == '{':
+                flush_buf()
+                advance()
+                advance()
+                expr_line, expr_col = line, col
+                depth = 1
+                expr_buf = []
+                while i < n and depth > 0:
+                    c = current()
+                    if c == '\\':
+                        advance()
+                        if i < n:
+                            esc = current()
+                            mapping = {'n': '\n', 't': '\t', 'r': '\r',
+                                       '\\': '\\', '"': '"', "'": "'", '0': '\0'}
+                            expr_buf.append(mapping.get(esc, '\\' + esc))
+                            advance()
+                    elif c == '{':
+                        depth += 1
+                        expr_buf.append(c)
+                        advance()
+                    elif c == '}':
+                        depth -= 1
+                        if depth > 0:
+                            expr_buf.append(c)
+                        advance()
+                    elif c == '\n':
+                        expr_buf.append('\n')
+                        advance_line()
+                    else:
+                        expr_buf.append(c)
+                        advance()
+                if depth != 0:
+                    raise LexerError("${...} 未闭合", expr_line, expr_col)
+                segments.append(
+                    ('expr', ''.join(expr_buf), expr_line, expr_col))
+
             elif ch == quote:
                 advance()
-                return ''.join(value), start_line, start_col
+                flush_buf()
+                return segments, start_line, start_col
+
             elif ch == '\n':
                 raise LexerError("字符串未闭合（遇到换行）", start_line, start_col)
+
             else:
-                value.append(ch)
+                buf.append(ch)
                 advance()
+
         raise LexerError("字符串未闭合", start_line, start_col)
 
     def read_code_string():
@@ -229,9 +342,12 @@ def split_token(code):
                 raise LexerError("块注释未闭合", start_line, start_col)
             continue
 
-        if ch in '"\'':
-            value, sl, sc = read_string(ch)
-            tokens.append(Token('STRING', value, sl, sc))
+        if ch in '"\'"':
+            segments, sl, sc = read_string(ch)
+            if len(segments) == 1 and segments[0][0] == 'str':
+                tokens.append(Token('STRING', segments[0][1], sl, sc))
+            else:
+                tokens.append(Token('INTERP_STRING', segments, sl, sc))
             continue
 
         if ch.isdigit() or (ch == '.' and peek().isdigit()):
@@ -628,21 +744,19 @@ class CodeObject:
 
     def run(self):
         stmts = self._parse()
-        # code 自己的 globals（独立作用域）
         code_globals = {}
-        # 父作用域：定义时的 scope（闭包）
         parent_scope = dict(self.scope)
-        # 合并父作用域到 code_globals（浅拷贝，Cell 共享）
         for k, v in parent_scope.items():
             code_globals[k] = v
-        # 再合并 interpreter.globals（如果 scope 里没有）
         for k, v in self.interpreter.globals.items():
             if k not in code_globals:
                 code_globals[k] = v
 
-        self.interpreter.exec_block(stmts, code_globals)
+        compiler = Compiler()
+        code, exception_table = compiler.compile_program(Program(stmts))
+        vm = VM(code, exception_table, code_globals, self.interpreter)
+        vm.run()
 
-        # 返回新增的变量（排除父作用域和全局的）
         new_cells = {k: v for k, v in code_globals.items()
                      if k not in parent_scope and k not in self.interpreter.globals}
         return GlobalView(new_cells, self.interpreter)
@@ -1474,7 +1588,7 @@ class Parser:
         if tok.type == 'KEYWORD' and tok.value in ('True', 'False', 'none', 'null'):
             self.advance()
             value = {'True': True, 'False': False,
-                     'none': None, 'null': None}[tok.value]
+                     'none': None, 'null': NULL}[tok.value]
             node = Literal(value, line=tok.line, col=tok.col)
             return self._parse_postfix(node)
 
@@ -1505,7 +1619,39 @@ class Parser:
         if tok.type == 'CODE_STRING':
             self.advance()
             return CodeLiteral(tok.value, line=tok.line, col=tok.col)
+        # 插值字符串
+        if tok.type == 'INTERP_STRING':
+            self.advance()
+            return self._parse_interp_string(tok.value, tok.line, tok.col)
         self.error(f"意外的 token: {tok.type} {tok.value!r}", tok)
+
+    def _parse_interp_string(self, segments, line, col):
+        """把插值字符串的 segments 拆成 Binary('+', ...) 拼接"""
+        parts = []
+        for kind, content, sline, scol in segments:
+            if kind == 'str':
+                parts.append(Literal(content, line=sline, col=scol))
+            elif kind == 'var':
+                inner = Variable(content, line=sline, col=scol)
+                parts.append(Call(
+                    Variable('str', line=sline, col=scol),
+                    [inner], [], line=sline, col=scol))
+            elif kind == 'expr':
+                sub_tokens = split_token(content)
+                sub_parser = Parser(sub_tokens)
+                try:
+                    expr = sub_parser.parse_expr()
+                except ParseError as e:
+                    self.error(f"插值表达式语法错误: {e}", self.current())
+                parts.append(Call(
+                    Variable('str', line=sline, col=scol),
+                    [expr], [], line=sline, col=scol))
+        if not parts:
+            return Literal("", line=line, col=col)
+        node = parts[0]
+        for p in parts[1:]:
+            node = Binary(node, '+', p, line=line, col=col)
+        return node
 
     def parse_identifier_or_call(self):
         tok = self.advance()
@@ -1609,16 +1755,6 @@ class Parser:
 # ============================================================================
 # 类型检查
 # ============================================================================
-
-class CheckError(Exception):
-    def __init__(self, message, line=0, col=0):
-        self.message = message
-        self.line = line
-        self.col = col
-        if line:
-            super().__init__(f"[行 {line}, 列 {col}] {message}")
-        else:
-            super().__init__(message)
 
 
 # ============================================================================
@@ -2162,7 +2298,6 @@ class EclException(Exception):
     def __init__(self, exc_type, message, cause=None, line=0, col=0):
         self.exc_type = exc_type
         self.message = message
-        self.cause = cause
         self.line = line
         self.col = col
         if line:
@@ -2174,54 +2309,6 @@ class EclException(Exception):
 class ReturnSignal(Exception):
     def __init__(self, value):
         self.value = value
-
-
-class BreakSignal(Exception):
-    pass
-
-
-class ContinueSignal(Exception):
-    pass
-
-
-class GotoSignal(Exception):
-    def __init__(self, label):
-        self.label = label
-
-
-class EclFunction:
-    def __init__(self, stmt, closure, interpreter):
-        self.stmt = stmt
-        self.closure = closure
-        self.interpreter = interpreter
-
-    def __call__(self, *args, **kwargs):
-        return self.interpreter.call_function(self, args, kwargs)
-
-
-class EclClass:
-    def __init__(self, name, stmt, closure, interpreter):
-        self.name = name
-        self.stmt = stmt
-        self.closure = closure
-        self.interpreter = interpreter
-        self.methods = {}
-        self.attrs = {}
-        # 先提取方法
-        for s in stmt.body:
-            if isinstance(s, FuncDefStmt):
-                self.methods[s.name] = s
-
-    def __call__(self, *args, **kwargs):
-        instance = EclInstance(self)
-        instance.attrs['__class__'] = self
-        init = self.methods.get('__init__')
-        if init:
-            self.interpreter.call_method(init, instance, args, kwargs)
-        return instance
-
-    def __repr__(self):
-        return f"<class {self.name}>"
 
 
 class EclInstance:
@@ -2237,12 +2324,901 @@ class ConstChangingError(EclException):
     pass
 
 
+# ============================================================================
+# Compiler
+# ============================================================================
+class Compiler:
+    """AST -> 三地址码 IR"""
+
+    def __init__(self):
+        self.code = []
+        self.temp_counter = 0
+        self.label_counter = 0
+        self.break_label = None
+        self.continue_label = None
+        self.exception_table = []
+
+    # ---------- 工具 ----------
+
+    def new_temp(self):
+        self.temp_counter += 1
+        return f"t{self.temp_counter}"
+
+    def new_label(self):
+        self.label_counter += 1
+        return f"L{self.label_counter}"
+
+    def emit(self, *instr):
+        self.code.append(instr)
+
+    def emit_label(self, name):
+        self.code.append(('label', name))
+
+    # ---------- 入口 ----------
+
+    def compile_program(self, program):
+        for stmt in program.body:
+            self.compile_stmt(stmt)
+        self.emit('halt')
+        return self.code, self.exception_table
+
+    # ---------- 语句 ----------
+
+    def compile_stmt(self, stmt):
+        if isinstance(stmt, ExprStmt):
+            self.compile_expr(stmt.expr)
+            return
+
+        if isinstance(stmt, DefineStmt):
+            return self.compile_define(stmt)
+
+        if isinstance(stmt, FuncDefStmt):
+            return self.compile_func_def(stmt)
+
+        if isinstance(stmt, ClassDefStmt):
+            return self.compile_class_def(stmt)
+
+        if isinstance(stmt, IfStmt):
+            return self.compile_if(stmt)
+
+        if isinstance(stmt, WhileStmt):
+            return self.compile_while(stmt)
+
+        if isinstance(stmt, ForStmt):
+            return self.compile_for(stmt)
+
+        if isinstance(stmt, ReturnStmt):
+            if stmt.value is not None:
+                src = self.compile_expr(stmt.value)
+                self.emit('return', src)
+            else:
+                self.emit('return_none')
+            return
+
+        if isinstance(stmt, BreakStmt):
+            if self.break_label is None:
+                raise CompileError("'break' 必须在循环内使用", stmt)
+            self.emit('goto', self.break_label)
+            return
+
+        if isinstance(stmt, ContinueStmt):
+            if self.continue_label is None:
+                raise CompileError("'continue' 必须在循环内使用", stmt)
+            self.emit('goto', self.continue_label)
+            return
+
+        if isinstance(stmt, GotoStmt):
+            self.emit('goto', f"label_{stmt.label}")
+            return
+
+        if isinstance(stmt, LabelStmt):
+            self.emit_label(f"label_{stmt.name}")
+            return
+
+        if isinstance(stmt, TryStmt):
+            return self.compile_try(stmt)
+
+        if isinstance(stmt, RaiseStmt):
+            src = self.compile_expr(stmt.exception)
+            self.emit('raise', src)
+            return
+
+        if isinstance(stmt, MatchStmt):
+            raise NotImplementedError("match 尚未实现")
+
+        raise NotImplementedError(f"未实现的语句: {type(stmt).__name__}")
+
+    # ---------- 定义 ----------
+
+    def compile_define(self, stmt):
+        if stmt.is_ref:
+            if isinstance(stmt.value, Variable):
+                self.emit('ref', stmt.name, stmt.value.name)
+            else:
+                raise CompileError("ref 必须绑定到变量", stmt)
+            return
+        if stmt.value is not None:
+            src = self.compile_expr(stmt.value)
+        else:
+            src = self.new_temp()
+            self.emit('const', src, None)
+        self.emit('store', stmt.name, src)
+
+    # ---------- 函数 ----------
+
+    def compile_func_def(self, stmt):
+        sub = Compiler()
+        for s in stmt.body:
+            sub.compile_stmt(s)
+        sub.emit('return_null')
+        sub.emit('halt')
+        defaults = {}
+        for p in stmt.params:
+            if p.get('default') is not None:
+                if isinstance(p['default'], Literal):
+                    defaults[p['name']] = p['default'].value
+                else:
+                    defaults[p['name']] = p['default']
+        self.emit('func', stmt.name, sub.code, stmt.params,
+                  stmt.varargs, stmt.kwargs, stmt.return_type, defaults)
+
+    # ---------- 类 ----------
+
+    def compile_class_def(self, stmt):
+        methods = {}
+        for s in stmt.body:
+            if isinstance(s, FuncDefStmt):
+                sub = Compiler()
+                for body_s in s.body:
+                    sub.compile_stmt(body_s)
+                sub.emit('return_null')
+                sub.emit('halt')
+                defaults = {}
+                for p in s.params:
+                    if p.get('default') is not None:
+                        if isinstance(p['default'], Literal):
+                            defaults[p['name']] = p['default'].value
+                        else:
+                            defaults[p['name']] = p['default']
+                methods[s.name] = (sub.code, s.params, s.varargs,
+                                   s.kwargs, s.return_type, defaults)
+        self.emit('class', stmt.name, stmt.bases, methods)
+
+    # ---------- if ----------
+
+    def compile_if(self, stmt):
+        end_label = self.new_label()
+
+        cond = self.compile_expr(stmt.condition)
+        next_label = self.new_label()
+        self.emit('if_not_goto', cond, next_label)
+
+        for s in stmt.body:
+            self.compile_stmt(s)
+        self.emit('goto', end_label)
+        self.emit_label(next_label)
+
+        for ec, eb in stmt.elifs:
+            cond = self.compile_expr(ec)
+            next_label = self.new_label()
+            self.emit('if_not_goto', cond, next_label)
+            for s in eb:
+                self.compile_stmt(s)
+            self.emit('goto', end_label)
+            self.emit_label(next_label)
+
+        if stmt.else_body:
+            for s in stmt.else_body:
+                self.compile_stmt(s)
+
+        self.emit_label(end_label)
+
+    # ---------- while ----------
+
+    def compile_while(self, stmt):
+        start = self.new_label()
+        end = self.new_label()
+        self.emit_label(start)
+        cond = self.compile_expr(stmt.condition)
+        self.emit('if_not_goto', cond, end)
+
+        old_break, old_continue = self.break_label, self.continue_label
+        self.break_label = end
+        self.continue_label = start
+
+        for s in stmt.body:
+            self.compile_stmt(s)
+
+        self.break_label, self.continue_label = old_break, old_continue
+        self.emit('goto', start)
+        self.emit_label(end)
+
+    # ---------- for ----------
+
+    def compile_for(self, stmt):
+        start = self.new_label()
+        end = self.new_label()
+        continue_label = self.new_label()
+
+        old_break, old_continue = self.break_label, self.continue_label
+        self.break_label = end
+        self.continue_label = continue_label
+
+        if stmt.count is not None:
+            count_src = self.compile_expr(stmt.count)
+            iter_tmp = self.new_temp()
+            self.emit('const', iter_tmp, 0)
+            self.emit_label(start)
+            cmp_tmp = self.new_temp()
+            self.emit('lt', cmp_tmp, iter_tmp, count_src)
+            self.emit('if_not_goto', cmp_tmp, end)
+            for s in stmt.body:
+                self.compile_stmt(s)
+            self.emit_label(continue_label)
+            one = self.new_temp()
+            self.emit('const', one, 1)
+            next_tmp = self.new_temp()
+            self.emit('add', next_tmp, iter_tmp, one)
+            self.emit('assign', iter_tmp, next_tmp)
+            self.emit('goto', start)
+            self.emit_label(end)
+
+        elif stmt.range_expr is not None:
+            r = stmt.range_expr
+            start_src = self.compile_expr(r.start)
+            end_src = self.compile_expr(r.end)
+            step_src = self.compile_expr(r.step) if r.step else None
+            if step_src is None:
+                step_src = self.new_temp()
+                self.emit('const', step_src, 1)
+            iter_tmp = self.new_temp()
+            self.emit('assign', iter_tmp, start_src)
+            self.emit_label(start)
+            cmp_tmp = self.new_temp()
+            op = 'le' if r.inclusive else 'lt'
+            self.emit(op, cmp_tmp, iter_tmp, end_src)
+            self.emit('if_not_goto', cmp_tmp, end)
+            self.emit('store', stmt.variable, iter_tmp)
+            for s in stmt.body:
+                self.compile_stmt(s)
+            self.emit_label(continue_label)
+            next_tmp = self.new_temp()
+            self.emit('add', next_tmp, iter_tmp, step_src)
+            self.emit('assign', iter_tmp, next_tmp)
+            self.emit('goto', start)
+            self.emit_label(end)
+
+        else:
+            iterable_src = self.compile_expr(stmt.iterable)
+            idx_tmp = self.new_temp()
+            self.emit('const', idx_tmp, 0)
+            self.emit_label(start)
+            len_tmp = self.new_temp()
+            self.emit('var', len_tmp, 'len')
+            len_result = self.new_temp()
+            self.emit('call', len_result, len_tmp, [iterable_src], {})
+            cmp_tmp = self.new_temp()
+            self.emit('lt', cmp_tmp, idx_tmp, len_result)
+            self.emit('if_not_goto', cmp_tmp, end)
+            item_tmp = self.new_temp()
+            self.emit('get_item', item_tmp, iterable_src, idx_tmp)
+            self.emit('store', stmt.variable, item_tmp)
+            for s in stmt.body:
+                self.compile_stmt(s)
+            self.emit_label(continue_label)
+            one = self.new_temp()
+            self.emit('const', one, 1)
+            next_tmp = self.new_temp()
+            self.emit('add', next_tmp, idx_tmp, one)
+            self.emit('assign', idx_tmp, next_tmp)
+            self.emit('goto', start)
+            self.emit_label(end)
+
+        self.break_label, self.continue_label = old_break, old_continue
+
+    # ---------- try ----------
+
+    def compile_try(self, stmt):
+        try_start = len(self.code)
+        for s in stmt.body:
+            self.compile_stmt(s)
+        try_end = len(self.code)
+
+        end_label = self.new_label()
+        else_label = self.new_label() if stmt.else_body else end_label
+
+        self.emit('goto', else_label)
+
+        for ec in stmt.excepts:
+            handler_pc = len(self.code)
+            self.exception_table.append({
+                'try_start': try_start,
+                'try_end': try_end,
+                'handler_pc': handler_pc,
+                'exc_type': ec['type'],
+                'exc_name': ec['name'],
+            })
+            for s in ec['body']:
+                self.compile_stmt(s)
+            self.emit('goto', end_label)
+
+        if stmt.else_body:
+            self.emit_label(else_label)
+            for s in stmt.else_body:
+                self.compile_stmt(s)
+
+        self.emit_label(end_label)
+
+        if stmt.finally_body:
+            for s in stmt.finally_body:
+                self.compile_stmt(s)
+
+    # ---------- 表达式 ----------
+
+    def compile_expr(self, expr):
+        if isinstance(expr, Literal):
+            t = self.new_temp()
+            self.emit('const', t, expr.value)
+            return t
+
+        if isinstance(expr, Variable):
+            t = self.new_temp()
+            self.emit('var', t, expr.name)
+            return t
+
+        if isinstance(expr, Binary):
+            lt = self.compile_expr(expr.left)
+            rt = self.compile_expr(expr.right)
+            t = self.new_temp()
+            op = expr.op
+            if op == '+':
+                self.emit('add', t, lt, rt)
+            elif op == '-':
+                self.emit('sub', t, lt, rt)
+            elif op == '*':
+                self.emit('mul', t, lt, rt)
+            elif op == '/':
+                self.emit('div', t, lt, rt)
+            elif op == '//':
+                self.emit('floordiv', t, lt, rt)
+            elif op == '%':
+                self.emit('mod', t, lt, rt)
+            elif op == '**':
+                self.emit('pow', t, lt, rt)
+            elif op in ('=', '=='):
+                self.emit('eq', t, lt, rt)
+            elif op == '!=':
+                self.emit('ne', t, lt, rt)
+            elif op == '<':
+                self.emit('lt', t, lt, rt)
+            elif op == '>':
+                self.emit('gt', t, lt, rt)
+            elif op == '<=':
+                self.emit('le', t, lt, rt)
+            elif op == '>=':
+                self.emit('ge', t, lt, rt)
+            elif op == '|':
+                self.emit('bor', t, lt, rt)
+            elif op == '&':
+                self.emit('band', t, lt, rt)
+            elif op == '^':
+                self.emit('xor', t, lt, rt)
+            elif op == '<<':
+                self.emit('lshift', t, lt, rt)
+            elif op == '>>':
+                self.emit('rshift', t, lt, rt)
+            elif op == 'and':
+                self.emit('and', t, lt, rt)
+            elif op == 'or':
+                self.emit('or', t, lt, rt)
+            else:
+                raise CompileError(f"未知二元运算符: {op}", expr)
+            return t
+
+        if isinstance(expr, Unary):
+            src = self.compile_expr(expr.right)
+            t = self.new_temp()
+            if expr.op == '-':
+                self.emit('neg', t, src)
+            elif expr.op == '~':
+                self.emit('invert', t, src)
+            elif expr.op in ('!', 'not'):
+                self.emit('not', t, src)
+            else:
+                raise CompileError(f"未知一元运算符: {expr.op}", expr)
+            return t
+
+        if isinstance(expr, Assign):
+            val = self.compile_expr(expr.value)
+            if isinstance(expr.name, Variable):
+                self.emit('store', expr.name.name, val)
+            elif isinstance(expr.name, Attribute):
+                obj = self.compile_expr(expr.name.obj)
+                self.emit('set_attr', obj, expr.name.attr, val)
+            return val
+
+        if isinstance(expr, Call):
+            func = self.compile_expr(expr.func)
+            args = [self.compile_expr(a) for a in expr.args]
+            kwargs = {k: self.compile_expr(v) for k, v in expr.kwargs}
+            t = self.new_temp()
+            self.emit('call', t, func, args, kwargs)
+            return t
+
+        if isinstance(expr, Attribute):
+            obj = self.compile_expr(expr.obj)
+            t = self.new_temp()
+            self.emit('get_attr', t, obj, expr.attr)
+            return t
+
+        if isinstance(expr, IfExpr):
+            cond = self.compile_expr(expr.condition)
+            t = self.new_temp()
+            else_label = self.new_label()
+            end_label = self.new_label()
+            self.emit('if_not_goto', cond, else_label)
+            then_src = self.compile_expr(expr.then_expr)
+            self.emit('assign', t, then_src)
+            self.emit('goto', end_label)
+            self.emit_label(else_label)
+            else_src = self.compile_expr(expr.else_expr)
+            self.emit('assign', t, else_src)
+            self.emit_label(end_label)
+            return t
+
+        if isinstance(expr, ListExpr):
+            t = self.new_temp()
+            self.emit('new_list', t)
+            for e in expr.elements:
+                e_src = self.compile_expr(e)
+                self.emit('list_append', t, e_src)
+            return t
+
+        if isinstance(expr, DictExpr):
+            t = self.new_temp()
+            self.emit('new_dict', t)
+            for k, v in expr.items:
+                k_src = self.compile_expr(k)
+                v_src = self.compile_expr(v)
+                self.emit('dict_set', t, k_src, v_src)
+            return t
+
+        if isinstance(expr, Subscript):
+            obj = self.compile_expr(expr.obj)
+            idx = self.compile_expr(expr.index)
+            t = self.new_temp()
+            self.emit('get_item', t, obj, idx)
+            return t
+
+        if isinstance(expr, RangeExpr):
+            start = self.compile_expr(expr.start)
+            end = self.compile_expr(expr.end)
+            step = self.compile_expr(expr.step) if expr.step else None
+            t = self.new_temp()
+            self.emit('new_range', t, start, end, expr.inclusive, step)
+            return t
+
+        if isinstance(expr, CodeLiteral):
+            t = self.new_temp()
+            self.emit('new_code', t, expr.source)
+            return t
+
+        if isinstance(expr, Swap):
+            lt = self.new_temp()
+            self.emit('var', lt, expr.left)
+            rt = self.new_temp()
+            self.emit('var', rt, expr.right)
+            self.emit('store', expr.left, rt)
+            self.emit('store', expr.right, lt)
+            return lt
+
+        raise NotImplementedError(f"未实现的表达式: {type(expr).__name__}")
+
+
+class CompileError(Exception):
+    def __init__(self, message, node=None):
+        self.message = message
+        self.node = node
+        if node and hasattr(node, 'line'):
+            super().__init__(f"[行 {node.line}, 列 {node.col}] {message}")
+        else:
+            super().__init__(message)
+
+
+# ============================================================================
+# IR 版函数 / 类
+# ============================================================================
+
+class EclFunctionIR:
+    def __init__(self, name, code, params, varargs, kwargs,
+                 ret_type, interpreter, defaults=None):
+        self.name = name
+        self.code = code
+        self.params = params
+        self.varargs = varargs
+        self.kwargs = kwargs
+        self.ret_type = ret_type
+        self.interpreter = interpreter
+        self.defaults = defaults or {}
+
+    def __call__(self, *args, **kwargs):
+        return self.interpreter.call_function_ir(self, args, kwargs)
+
+    def __repr__(self):
+        return f"<function {self.name}>"
+
+
+class EclClassIR:
+    def __init__(self, name, bases, methods, interpreter):
+        self.name = name
+        self.bases = bases
+        # name -> (code, params, varargs, kwargs, ret_type, defaults)
+        self.methods = methods
+        self.interpreter = interpreter
+
+    def __call__(self, *args, **kwargs):
+        instance = EclInstance(self)
+        instance.attrs['__class__'] = self
+        init = self.methods.get('__init__')
+        if init:
+            self.interpreter.call_method_ir(init, instance, args, kwargs)
+        return instance
+
+    def __repr__(self):
+        return f"<class {self.name}>"
+
+
+class VM:
+    def __init__(self, code, exception_table, scope, interpreter):
+        self.code = code
+        self.exception_table = exception_table
+        self.scope = scope
+        self.interpreter = interpreter
+        self.temps = {}
+        self.pc = 0
+        self.labels = {}
+        for i, op in enumerate(code):
+            if op[0] == 'label':
+                self.labels[op[1]] = i + 1
+
+    def run(self):
+        while self.pc < len(self.code):
+            try:
+                op = self.code[self.pc]
+                self.pc += 1
+                self.exec_op(op)
+            except ReturnSignal:
+                raise
+            except EclException as e:
+                if not self.handle_exception(e):
+                    raise
+
+    def handle_exception(self, e):
+        for entry in sorted(self.exception_table,
+                            key=lambda x: x['try_start'], reverse=True):
+            if entry['try_start'] <= self.pc <= entry['try_end']:
+                if entry['exc_type'] is None or entry['exc_type'] == e.exc_type:
+                    if entry['exc_name']:
+                        self.scope[entry['exc_name']] = Cell(e)
+                    self.pc = entry['handler_pc']
+                    return True
+        return False
+
+    def lookup_cell(self, name, for_write=False):
+        for scope in [self.scope, self.interpreter.globals]:
+            if name in scope:
+                cell = scope[name]
+                if for_write and cell.is_const:
+                    self.interpreter.error(
+                        f"不能重新赋值常量 '{name}'", None, 'ConstChangingError')
+                return cell
+        self.interpreter.error(f"未定义的变量: '{name}'", None, 'NameError')
+
+    def exec_op(self, op):
+        kind = op[0]
+
+        if kind == 'const':
+            _, dest, value = op
+            self.temps[dest] = value
+
+        elif kind == 'var':
+            _, dest, name = op
+            cell = self.lookup_cell(name)
+            self.temps[dest] = cell.value
+
+        elif kind == 'store':
+            _, name, src = op
+            val = self.temps[src]
+            found = False
+            for scope in [self.scope, self.interpreter.globals]:
+                if name in scope:
+                    cell = scope[name]
+                    if cell.is_const:
+                        self.interpreter.error(
+                            f"不能重新赋值常量 '{name}'", None, 'ConstChangingError')
+                    cell.value = val
+                    found = True
+                    break
+            if not found:
+                self.scope[name] = Cell(val)
+
+        elif kind == 'ref':
+            _, name, src_name = op
+            cell = self.lookup_cell(src_name)
+            self.scope[name] = cell
+
+        elif kind == 'assign':
+            _, dest, src = op
+            self.temps[dest] = self.temps[src]
+
+        # ---------- 原生运算 ----------
+        elif kind == 'add':
+            _, dest, src1, src2 = op
+            a = self.temps[src1]
+            b = self.temps[src2]
+            if type(a) is int and type(b) is int:
+                self.temps[dest] = a + b
+            elif type(a) is str and type(b) is str:
+                self.temps[dest] = a + b
+            elif type(a) is float and type(b) is float:
+                self.temps[dest] = a + b
+            else:
+                self.interpreter.error(
+                    f"不支持 + : {type(a).__name__} + {type(b).__name__}",
+                    None, 'TypeError')
+
+        elif kind == 'sub':
+            _, dest, src1, src2 = op
+            a = self.temps[src1]
+            b = self.temps[src2]
+            self.temps[dest] = a - b
+
+        elif kind == 'mul':
+            _, dest, src1, src2 = op
+            a = self.temps[src1]
+            b = self.temps[src2]
+            self.temps[dest] = a * b
+
+        elif kind == 'div':
+            _, dest, src1, src2 = op
+            a = self.temps[src1]
+            b = self.temps[src2]
+            if b == 0:
+                self.interpreter.error("除零错误", None, 'ZeroDivisionError')
+            self.temps[dest] = a / b
+
+        elif kind == 'floordiv':
+            _, dest, src1, src2 = op
+            a = self.temps[src1]
+            b = self.temps[src2]
+            if b == 0:
+                self.interpreter.error("除零错误", None, 'ZeroDivisionError')
+            self.temps[dest] = a // b
+
+        elif kind == 'mod':
+            _, dest, src1, src2 = op
+            a = self.temps[src1]
+            b = self.temps[src2]
+            if b == 0:
+                self.interpreter.error("除零错误", None, 'ZeroDivisionError')
+            self.temps[dest] = a % b
+
+        elif kind == 'pow':
+            _, dest, src1, src2 = op
+            self.temps[dest] = self.temps[src1] ** self.temps[src2]
+
+        elif kind == 'eq':
+            _, dest, src1, src2 = op
+            self.temps[dest] = self.temps[src1] == self.temps[src2]
+
+        elif kind == 'ne':
+            _, dest, src1, src2 = op
+            self.temps[dest] = self.temps[src1] != self.temps[src2]
+
+        elif kind == 'lt':
+            _, dest, src1, src2 = op
+            self.temps[dest] = self.temps[src1] < self.temps[src2]
+
+        elif kind == 'gt':
+            _, dest, src1, src2 = op
+            self.temps[dest] = self.temps[src1] > self.temps[src2]
+
+        elif kind == 'le':
+            _, dest, src1, src2 = op
+            self.temps[dest] = self.temps[src1] <= self.temps[src2]
+
+        elif kind == 'ge':
+            _, dest, src1, src2 = op
+            self.temps[dest] = self.temps[src1] >= self.temps[src2]
+
+        elif kind == 'bor':
+            _, dest, src1, src2 = op
+            self.temps[dest] = self.temps[src1] | self.temps[src2]
+
+        elif kind == 'band':
+            _, dest, src1, src2 = op
+            self.temps[dest] = self.temps[src1] & self.temps[src2]
+
+        elif kind == 'xor':
+            _, dest, src1, src2 = op
+            self.temps[dest] = self.temps[src1] ^ self.temps[src2]
+
+        elif kind == 'lshift':
+            _, dest, src1, src2 = op
+            self.temps[dest] = self.temps[src1] << self.temps[src2]
+
+        elif kind == 'rshift':
+            _, dest, src1, src2 = op
+            self.temps[dest] = self.temps[src1] >> self.temps[src2]
+
+        elif kind == 'and':
+            _, dest, src1, src2 = op
+            a = self.temps[src1]
+            if not self.interpreter._truthy(a):
+                self.temps[dest] = a
+            else:
+                self.temps[dest] = self.temps[src2]
+
+        elif kind == 'or':
+            _, dest, src1, src2 = op
+            a = self.temps[src1]
+            if self.interpreter._truthy(a):
+                self.temps[dest] = a
+            else:
+                self.temps[dest] = self.temps[src2]
+
+        elif kind == 'neg':
+            _, dest, src = op
+            a = self.temps[src]
+            if isinstance(a, EclInstance):
+                method = a.cls.methods.get('__neg__')
+                if method:
+                    self.temps[dest] = self.interpreter.call_method_ir(
+                        method, a, [], {})
+                    return
+            self.temps[dest] = -a
+
+        elif kind == 'invert':
+            _, dest, src = op
+            a = self.temps[src]
+            if isinstance(a, EclInstance):
+                method = a.cls.methods.get('__invert__')
+                if method:
+                    self.temps[dest] = self.interpreter.call_method_ir(
+                        method, a, [], {})
+                    return
+            self.temps[dest] = ~a
+
+        elif kind == 'not':
+            _, dest, src = op
+            self.temps[dest] = not self.interpreter._truthy(self.temps[src])
+
+        # ---------- 控制流 ----------
+        elif kind == 'goto':
+            _, label = op
+            self.pc = self.labels[label]
+
+        elif kind == 'if_goto':
+            _, src, label = op
+            if self.interpreter._truthy(self.temps[src]):
+                self.pc = self.labels[label]
+
+        elif kind == 'if_not_goto':
+            _, src, label = op
+            if not self.interpreter._truthy(self.temps[src]):
+                self.pc = self.labels[label]
+
+        elif kind == 'label':
+            pass
+
+        # ---------- 函数 ----------
+        elif kind == 'call':
+            _, dest, func_src, args, kwargs = op
+            func = self.temps[func_src]
+            arg_vals = [self.temps[a] for a in args]
+            kwarg_vals = {k: self.temps[v] for k, v in kwargs.items()}
+            self.temps[dest] = self.interpreter.call_value(
+                func, arg_vals, kwarg_vals)
+
+        elif kind == 'return':
+            _, src = op
+            raise ReturnSignal(self.temps[src])
+
+        elif kind == 'return_none':
+            raise ReturnSignal(None)
+
+        elif kind == 'return_null':
+            raise ReturnSignal(NULL)
+
+        # ---------- 数据结构 ----------
+        elif kind == 'new_list':
+            _, dest = op
+            self.temps[dest] = []
+
+        elif kind == 'list_append':
+            _, dest, src = op
+            self.temps[dest].append(self.temps[src])
+
+        elif kind == 'new_dict':
+            _, dest = op
+            self.temps[dest] = {}
+
+        elif kind == 'dict_set':
+            _, dest, key_src, val_src = op
+            self.temps[dest][self.temps[key_src]] = self.temps[val_src]
+
+        elif kind == 'new_range':
+            _, dest, start, end, inclusive, step = op
+            s = int(self.temps[start])
+            e = int(self.temps[end])
+            st = int(self.temps[step]) if step else 1
+            stop = e + (1 if inclusive else 0)
+            self.temps[dest] = list(range(s, stop, st))
+
+        elif kind == 'get_item':
+            _, dest, obj, idx = op
+            try:
+                self.temps[dest] = self.temps[obj][self.temps[idx]]
+            except (IndexError, KeyError) as e:
+                self.interpreter.error(f"下标访问错误: {e}", None, type(e).__name__)
+
+        elif kind == 'set_item':
+            _, obj, idx, src = op
+            try:
+                self.temps[obj][self.temps[idx]] = self.temps[src]
+            except (IndexError, KeyError) as e:
+                self.interpreter.error(f"下标赋值错误: {e}", None, type(e).__name__)
+
+        elif kind == 'get_attr':
+            _, dest, obj, name = op
+            self.temps[dest] = self.interpreter.get_attr(self.temps[obj], name)
+
+        elif kind == 'set_attr':
+            _, obj, name, src = op
+            self.interpreter.set_attr(self.temps[obj], name, self.temps[src])
+
+        # ---------- 定义 ----------
+        elif kind == 'func':
+            _, name, sub_code, params, varargs, kwargs_name, ret_type, defaults = op
+            fn = EclFunctionIR(name, sub_code, params, varargs, kwargs_name,
+                               ret_type, self.interpreter, defaults)
+            self.scope[name] = Cell(fn)
+
+        elif kind == 'class':
+            _, name, bases, methods = op
+            cls = EclClassIR(name, bases, methods, self.interpreter)
+            self.scope[name] = Cell(cls)
+
+        elif kind == 'new_code':
+            _, dest, source = op
+            self.temps[dest] = CodeObject(source, self.scope, self.interpreter)
+
+        # ---------- 异常 ----------
+        elif kind == 'raise':
+            _, src = op
+            exc = self.temps[src]
+            if isinstance(exc, EclException):
+                raise exc
+            if hasattr(exc, 'exc_type'):
+                msg = getattr(exc, 'message', str(exc))
+                raise EclException(exc.exc_type, msg)
+            raise EclException('Exception', str(exc))
+
+        # ---------- 结束 ----------
+        elif kind == 'halt':
+            self.pc = len(self.code)
+
+        else:
+            raise EclException('RuntimeError', f"未知指令: {kind}")
+
+# ============================================================================
+# Interpreter
+# ============================================================================
+
+
 class Interpreter:
     def __init__(self):
         self.globals = {}
-        self.functions = {}
-        self.classes = {}
-        self._in_function = False
         self._init_builtins()
 
     def _init_builtins(self):
@@ -2259,7 +3235,6 @@ class Interpreter:
         self.globals['max'] = Cell(max)
         self.globals['min'] = Cell(min)
         self.globals['sum'] = Cell(sum)
-        # 异常类
         for ename in ('Exception', 'ValueError', 'TypeError',
                       'IndexError', 'KeyError', 'ZeroDivisionError',
                       'RuntimeError', 'NameError'):
@@ -2278,23 +3253,63 @@ class Interpreter:
 
             def __str__(self):
                 return self.message
-
         return _Exc
 
     def _builtin_print(self, *args):
-        print(*[('none' if a is None else a) for a in args])
+        out = []
+        for a in args:
+            if a is None:
+                out.append("none")
+            elif a is NULL:
+                out.append("null")
+            elif isinstance(a, EclInstance):
+                method_stmt = a.cls.methods.get('__str__')
+                if method_stmt is not None:
+                    result = self.call_method_ir(method_stmt, a, [], {})
+                    if result is None:
+                        out.append("none")
+                    elif result is NULL:
+                        out.append("null")
+                    else:
+                        out.append(str(result))
+                else:
+                    out.append(repr(a))
+            else:
+                out.append(str(a))
+        print(*out)
         return None
 
     def _builtin_input(self, prompt=""):
         return input(str(prompt))
 
     def _builtin_type(self, obj):
+        if obj is None:
+            return 'none'
+        if obj is NULL:
+            return 'null'
+        if isinstance(obj, EclInstance):
+            return obj.cls.name
         return type(obj).__name__
 
     def _builtin_len(self, obj):
         return len(obj)
 
     def _builtin_str(self, obj):
+        if obj is None:
+            return "none"
+        elif obj is NULL:
+            return "null"
+        elif isinstance(obj, EclInstance):
+            method_stmt = obj.cls.methods.get('__str__')
+            if method_stmt is not None:
+                result = self.call_method_ir(method_stmt, obj, [], {})
+                if result is None:
+                    return "none"
+                elif result is NULL:
+                    return "null"
+                else:
+                    return str(result)
+            return repr(obj)
         return str(obj)
 
     def _builtin_int(self, obj):
@@ -2309,340 +3324,26 @@ class Interpreter:
     def _builtin_range(self, *args):
         return list(range(*[int(a) for a in args]))
 
-    # ---------- 错误定位 ----------
-
     def error(self, msg, node=None, exc_type='RuntimeError'):
-        if node is not None and hasattr(node, 'line') and hasattr(node, 'col'):
+        if node is not None and hasattr(node, 'line'):
             raise EclException(exc_type, msg, line=node.line, col=node.col)
         raise EclException(exc_type, msg)
 
-    # ---------- 作用域 ----------
-    def lookup_cell(self, name, node=None, scope_stack=None, for_write=False):
-        if scope_stack is None:
-            scope_stack = [self.globals]
-        for scope in scope_stack:
-            if name in scope:
-                cell = scope[name]
-                if for_write and cell.is_const:
-                    self.error(
-                        f"不能重新赋值常量 '{name}'",
-                        node, 'ConstChangingError')
-                return cell
-        self.error(f"未定义的变量: '{name}'", node, 'NameError')
-
-    def lookup_value(self, name, node=None, scope_stack=None):
-        cell = self.lookup_cell(name, node, scope_stack)
-        return cell.value
-
-    # ---------- 执行入口 ----------
-
-    def interpret(self, program, scope=None):
-        if scope is None:
-            scope = self.globals
-        try:
-            self.exec_block(program.body, scope)
-        except ReturnSignal:
-            pass
-
-    def exec_block(self, stmts, scope, parent_labels=None):
-        labels = dict(parent_labels) if parent_labels else {}
-        local_labels = set()
-        for i, s in enumerate(stmts):
-            if isinstance(s, LabelStmt):
-                labels[s.name] = i
-                local_labels.add(s.name)
-
-        pc = 0
-        while pc < len(stmts):
-            stmt = stmts[pc]
-            try:
-                result_pc = self.exec_statement(stmt, scope, labels, pc)
-                if isinstance(result_pc, int) and result_pc != pc:
-                    pc = result_pc
-                    continue
-            except GotoSignal as g:
-                if g.label in local_labels:
-                    pc = labels[g.label] + 1
-                    continue
-                # 不在当前 block，向上抛
-                raise
-            pc += 1
-
-    def exec_statement(self, stmt, scope, labels, pc):
-        try:
-            return self._exec_statement(stmt, scope, labels, pc)
-        except EclException:
-            raise
-        except ReturnSignal:
-            raise
-        except BreakSignal:
-            raise
-        except ContinueSignal:
-            raise
-        except GotoSignal:
-            raise
-        except Exception as e:
-            self.error(str(e), stmt, type(e).__name__)
-
-    def _exec_statement(self, stmt, scope, labels, pc):
-        if isinstance(stmt, ExprStmt):
-            self.eval_expr(stmt.expr, scope)
-            return None
-
-        if isinstance(stmt, DefineStmt):
-            return self.exec_define(stmt, scope)
-
-        if isinstance(stmt, FuncDefStmt):
-            fn = EclFunction(stmt, scope, self)
-            scope[stmt.name] = Cell(fn)
-            return None
-
-        if isinstance(stmt, ClassDefStmt):
-            cls = EclClass(stmt.name, stmt, scope, self)
-            scope[stmt.name] = Cell(cls)
-            return None
-
-        if isinstance(stmt, ReturnStmt):
-            if stmt.value is not None:
-                val = self.eval_expr(stmt.value, scope)
-            else:
-                val = None
-            raise ReturnSignal(val)
-
-        if isinstance(stmt, IfStmt):
-            if self._truthy(self.eval_expr(stmt.condition, scope)):
-                self.exec_block(stmt.body, scope)
-                return None
-            for ec, eb in stmt.elifs:
-                if self._truthy(self.eval_expr(ec, scope)):
-                    self.exec_block(eb, scope)
-                    return None
-            if stmt.else_body:
-                self.exec_block(stmt.else_body, scope)
-            return None
-
-        if isinstance(stmt, WhileStmt):
-            while self._truthy(self.eval_expr(stmt.condition, scope)):
-                try:
-                    self.exec_block(stmt.body, scope)
-                except BreakSignal:
-                    break
-                except ContinueSignal:
-                    continue
-            return None
-
-        if isinstance(stmt, ForStmt):
-            return self.exec_for(stmt, scope)
-
-        if isinstance(stmt, BreakStmt):
-            raise BreakSignal()
-
-        if isinstance(stmt, ContinueStmt):
-            raise ContinueSignal()
-
-        if isinstance(stmt, GotoStmt):
-            raise GotoSignal(stmt.label)
-
-        if isinstance(stmt, LabelStmt):
-            return None
-
-        if isinstance(stmt, RaiseStmt):
-            exc_val = self.eval_expr(stmt.exception, scope)
-            if hasattr(exc_val, 'exc_type'):
-                exc_type = exc_val.exc_type
-                msg = getattr(exc_val, 'message', str(exc_val))
-            elif isinstance(exc_val, dict):
-                exc_type = exc_val.get('__class__', 'Exception')
-                msg = exc_val.get('message', str(exc_val))
-            else:
-                exc_type = type(exc_val).__name__
-                msg = str(exc_val)
-            raise EclException(exc_type, msg, line=stmt.line, col=stmt.col)
-
-        if isinstance(stmt, TryStmt):
-            return self.exec_try(stmt, scope)
-
-        if isinstance(stmt, (ImportStmt, WithStmt, MatchStmt, UsingStmt,
-                             DecoratorStmt)):
-            self.error(f"语句 {type(stmt).__name__} 尚未实现",
-                       stmt, 'NotImplementedError')
-
-        self.error(f"未知语句类型: {type(stmt).__name__}", stmt)
-
-    def exec_define(self, stmt, scope):
-        if stmt.is_ref:
-            if stmt.value is None:
-                scope[stmt.name] = Cell(None, is_const=stmt.is_const)
-                return None
-            if isinstance(stmt.value, Variable):
-                cell = self.lookup_cell(
-                    stmt.value.name, stmt.value, [scope, self.globals])
-                scope[stmt.name] = cell
-            else:
-                self.error("ref 必须绑定到变量", stmt)
-            return None
-
-        if stmt.value is None:
-            scope[stmt.name] = Cell(
-                None, is_const=stmt.is_const)   # ← 加 is_const
-            return None
-
-        val = self.eval_expr(stmt.value, scope)
-        if stmt.type_name:
-            val = self.convert_type(val, stmt.type_name, stmt)
-        scope[stmt.name] = Cell(
-            val, is_const=stmt.is_const)        # ← 加 is_const
-        return None
-
-    def exec_for(self, stmt, scope):
-        if stmt.count is not None:
-            n = int(self.eval_expr(stmt.count, scope))
-            iterable = range(n)
-            var = None
-        elif stmt.range_expr is not None:
-            r = stmt.range_expr
-            start = int(self.eval_expr(r.start, scope))
-            end = int(self.eval_expr(r.end, scope))
-            step = int(self.eval_expr(r.step, scope)) if r.step else 1
-            stop = end + (1 if r.inclusive else 0)
-            iterable = range(start, stop, step)
-            var = stmt.variable
-        else:
-            iterable = self.eval_expr(stmt.iterable, scope)
-            var = stmt.variable
-
-        for item in iterable:
-            if var:
-                scope[var] = Cell(item)
-            try:
-                self.exec_block(stmt.body, scope)
-            except BreakSignal:
-                break
-            except ContinueSignal:
-                continue
-        return None
-
-    def exec_try(self, stmt, scope):
-        try:
-            self.exec_block(stmt.body, scope)
-        except EclException as e:
-            handled = False
-            for ec in stmt.excepts:
-                et = ec['type']
-                if et is None or et == e.exc_type or et == 'Exception':
-                    if ec['name']:
-                        scope[ec['name']] = Cell(e)
-                    self.exec_block(ec['body'], scope)
-                    handled = True
-                    break
-            if not handled:
-                raise
-        else:
-            if stmt.else_body:
-                self.exec_block(stmt.else_body, scope)
-        finally:
-            if stmt.finally_body:
-                self.exec_block(stmt.finally_body, scope)
-
-    def call_function(self, fn, args, kwargs, self_instance=None):
-        stmt = fn.stmt
-        local = dict(fn.closure)
-        if self_instance is not None:
-            local['self'] = Cell(self_instance)
-
-        # 绑定参数
-        params = stmt.params
-        defaults = stmt.defaults
-        for i, p in enumerate(params):
-            pname = p['name']
-            if i < len(args):
-                val = args[i]
-            elif pname in kwargs:
-                val = kwargs[pname]
-            elif pname in defaults:
-                val = self.eval_expr(defaults[pname], fn.closure)
-            else:
-                self.error(f"函数 '{stmt.name}' 缺少参数 '{pname}'",
-                           stmt, 'TypeError')
-            if p.get('type'):
-                val = self.convert_type(val, p['type'], stmt)
-            local[pname] = Cell(val)
-
-        if stmt.varargs:
-            rest = list(args[len(params):])
-            local[stmt.varargs] = Cell(rest)
-        if stmt.kwargs:
-            extra = {k: v for k, v in kwargs.items() if k not in
-                     {p['name'] for p in params}}
-            local[stmt.kwargs] = Cell(extra)
-
-        try:
-            self.exec_block(stmt.body, local)
-        except ReturnSignal as r:
-            ret = r.value
-        else:
-            ret = None
-
-        if stmt.return_type and ret is not None:
-            ret = self.convert_type(ret, stmt.return_type, stmt)
-        return ret
-
-    def call_method(self, method_stmt, instance, args, kwargs):
-        fn = EclFunction(method_stmt, {**self.globals}, self)
-        new_args = (instance,) + tuple(args)
-        return self.call_function(fn, new_args, kwargs)
-
-    def call_function_with_self(self, fn, args, kwargs, instance):
-        stmt = fn.stmt
-        local = dict(fn.closure)
-        local['self'] = Cell(instance)
-
-        params = stmt.params
-        defaults = stmt.defaults
-        for i, p in enumerate(params):
-            pname = p['name']
-            if i < len(args):
-                val = args[i]
-            elif pname in kwargs:
-                val = kwargs[pname]
-            elif pname in defaults:
-                val = self.eval_expr(defaults[pname], fn.closure)
-            else:
-                self.error(f"函数 '{stmt.name}' 缺少参数 '{pname}'",
-                           stmt, 'TypeError')
-            if p.get('type'):
-                val = self.convert_type(val, p['type'], stmt)
-            local[pname] = Cell(val)
-
-        if stmt.varargs:
-            rest = list(args[len(params):])
-            local[stmt.varargs] = Cell(rest)
-        if stmt.kwargs:
-            extra = {k: v for k, v in kwargs.items() if k not in
-                     {p['name'] for p in params}}
-            local[stmt.kwargs] = Cell(extra)
-
-        try:
-            self.exec_block(stmt.body, local)
-        except ReturnSignal as r:
-            ret = r.value
-        else:
-            ret = None
-
-        if stmt.return_type and ret is not None:
-            ret = self.convert_type(ret, stmt.return_type, stmt)
-        return ret
+    @staticmethod
+    def _truthy(v):
+        if v is NULL:
+            return False
+        return bool(v)
 
     def convert_type(self, value, type_name, node=None):
         if type_name is None or type_name == 'any':
             return value
+        if value is NULL:
+            return NULL
         base = type_name.split('[')[0].strip().split()[0]
         mapping = {
-            'int': int,
-            'float': float,
-            'double': float,
-            'str': str,
-            'bool': bool,
+            'int': int, 'float': float, 'double': float,
+            'str': str, 'bool': bool,
         }
         if base in mapping:
             try:
@@ -2652,264 +3353,249 @@ class Interpreter:
                            node, 'TypeError')
         return value
 
-    @staticmethod
-    def _truthy(v):
-        return bool(v)
-
-    # ---------- 表达式求值 ----------
-
-    def eval_expr(self, expr, scope):
-        try:
-            return self._eval_expr(expr, scope)
-        except EclException:
-            raise
-        except Exception as e:
-            self.error(str(e), expr, type(e).__name__)
-
-    def _eval_expr(self, expr, scope):
-        if isinstance(expr, CodeLiteral):
-            return CodeObject(expr.source, scope, self,
-                              line=expr.line, col=expr.col)
-        if isinstance(expr, Literal):
-            return expr.value
-
-        if isinstance(expr, Variable):
-            return self.lookup_value(expr.name, expr, [scope, self.globals])
-
-        if isinstance(expr, Binary):
-            return self.eval_binary(expr, scope)
-
-        if isinstance(expr, Unary):
-            v = self.eval_expr(expr.right, scope)
-            if expr.op == '-':
-                return -v
-            if expr.op == '~':
-                return ~v
-            if expr.op == '!':
-                return not v
-            if expr.op == 'not':
-                return not v
-            self.error(f"未知一元运算符: {expr.op}", expr)
-
-        if isinstance(expr, Assign):
-            val = self.eval_expr(expr.value, scope)
-            target = expr.name
-
-            if isinstance(target, Variable):
-                cell = self.lookup_cell(
-                    target.name, expr, [scope, self.globals], for_write=True)
-                cell.value = val
-
-            elif isinstance(target, Attribute):
-                obj = self.eval_expr(target.obj, scope)
-                if isinstance(target, Attribute):
-                    obj = self.eval_expr(target.obj, scope)
-                    if isinstance(target.obj, Variable) and target.obj.name == 'global':
-                        # global.x <- val
-                        cell = self.lookup_cell(
-                            target.attr, expr, [self.globals])
-                        cell.value = val
-                    if isinstance(obj, GlobalView):
-                        obj.set(target.attr, val)
-                    elif isinstance(obj, EclInstance):
-                        obj.attrs[target.attr] = val
-                    else:
-                        try:
-                            setattr(obj, target.attr, val)
-                        except AttributeError:
-                            self.error(
-                                f"对象不支持属性赋值: {target.attr}", expr, 'AttributeError')
-                if isinstance(obj, EclInstance):
-                    obj.attrs[target.attr] = val
-                else:
-                    try:
-                        setattr(obj, target.attr, val)
-                    except AttributeError:
-                        self.error(
-                            f"对象不支持属性赋值: {target.attr}", expr, 'AttributeError')
-            return val
-
-        if isinstance(expr, Swap):
-            lc = self.lookup_cell(
-                expr.left, expr, [scope, self.globals], for_write=True)
-            rc = self.lookup_cell(
-                expr.right, expr, [scope, self.globals], for_write=True)
-            lc.value, rc.value = rc.value, lc.value
-            return None
-
-        if isinstance(expr, Call):
-            return self.eval_call(expr, scope)
-
-        if isinstance(expr, Attribute):
-            return self.eval_attribute(expr, scope)
-
-        if isinstance(expr, IfExpr):
-            if self._truthy(self.eval_expr(expr.condition, scope)):
-                return self.eval_expr(expr.then_expr, scope)
-            return self.eval_expr(expr.else_expr, scope)
-
-        if isinstance(expr, ListExpr):
-            return [self.eval_expr(e, scope) for e in expr.elements]
-
-        if isinstance(expr, DictExpr):
-            return {self.eval_expr(k, scope): self.eval_expr(v, scope)
-                    for k, v in expr.items}
-
-        if isinstance(expr, Subscript):
-            obj = self.eval_expr(expr.obj, scope)
-            idx = self.eval_expr(expr.index, scope)
-            try:
-                return obj[idx]
-            except (IndexError, KeyError) as e:
-                self.error(f"下标访问错误: {e}", expr, type(e).__name__)
-            except TypeError as e:
-                self.error(f"类型不支持下标访问: {e}", expr, 'TypeError')
-
-        if isinstance(expr, RangeExpr):
-            start = int(self.eval_expr(expr.start, scope))
-            end = int(self.eval_expr(expr.end, scope))
-            step = int(self.eval_expr(expr.step, scope)) if expr.step else 1
-            stop = end + (1 if expr.inclusive else 0)
-            return list(range(start, stop, step))
-
-        self.error(f"未知表达式类型: {type(expr).__name__}", expr)
-
-    def eval_binary(self, expr, scope):
-        op = expr.op
-
-        # 短路求值
-        if op == 'and':
-            left = self.eval_expr(expr.left, scope)
-            if not self._truthy(left):
-                return left
-            return self.eval_expr(expr.right, scope)
-        if op == 'or':
-            left = self.eval_expr(expr.left, scope)
-            if self._truthy(left):
-                return left
-            return self.eval_expr(expr.right, scope)
-
-        left = self.eval_expr(expr.left, scope)
-        right = self.eval_expr(expr.right, scope)
-
+    def apply_binary(self, op, a, b):
+        magic = self.try_magic_method(a, b, op)
+        if magic is not _NO_MAGIC:
+            return magic
         try:
             if op == '+':
-                return left + right
+                return a + b
             if op == '-':
-                return left - right
+                return a - b
             if op == '*':
-                return left * right
+                return a * b
             if op == '/':
-                if right == 0:
-                    self.error("除零错误", expr, 'ZeroDivisionError')
-                return left / right
+                if b == 0:
+                    self.error("除零错误", None, 'ZeroDivisionError')
+                return a / b
             if op == '//':
-                if right == 0:
-                    self.error("除零错误", expr, 'ZeroDivisionError')
-                return left // right
+                if b == 0:
+                    self.error("除零错误", None, 'ZeroDivisionError')
+                return a // b
             if op == '%':
-                if right == 0:
-                    self.error("除零错误", expr, 'ZeroDivisionError')
-                return left % right
+                if b == 0:
+                    self.error("除零错误", None, 'ZeroDivisionError')
+                return a % b
             if op == '**':
-                return left ** right
+                return a ** b
             if op in ('=', '=='):
-                return left == right
+                return a == b
             if op == '!=':
-                return left != right
+                return a != b
             if op == '<':
-                return left < right
+                return a < b
             if op == '>':
-                return left > right
+                return a > b
             if op == '<=':
-                return left <= right
+                return a <= b
             if op == '>=':
-                return left >= right
+                return a >= b
             if op == '|':
-                return left | right
+                return a | b
             if op == '&':
-                return left & right
+                return a & b
             if op == '^':
-                return left ^ right
+                return a ^ b
             if op == '<<':
-                return left << right
+                return a << b
             if op == '>>':
-                return left >> right
+                return a >> b
         except EclException:
-            raise                      # ★ 关键：不要被下面的 except Exception 吞掉
+            raise
         except TypeError as e:
-            self.error(f"类型错误: {e}", expr, 'TypeError')
+            self.error(f"类型错误: {e}", None, 'TypeError')
         except ZeroDivisionError as e:
-            self.error(f"除零错误: {e}", expr, 'ZeroDivisionError')
+            self.error(f"除零错误: {e}", None, 'ZeroDivisionError')
         except Exception as e:
-            self.error(f"运算错误: {e}", expr, type(e).__name__)
+            self.error(f"运算错误: {e}", None, type(e).__name__)
+        self.error(f"未知二元运算符: {op}", None)
 
-        self.error(f"未知二元运算符: {op}", expr)
+    def apply_unary(self, op, a):
+        if op == '-':
+            if isinstance(a, EclInstance):
+                method = a.cls.methods.get('__neg__')
+                if method:
+                    return self.call_method_ir(method, a, [], {})
+            return -a
+        if op == '~':
+            if isinstance(a, EclInstance):
+                method = a.cls.methods.get('__invert__')
+                if method:
+                    return self.call_method_ir(method, a, [], {})
+            return ~a
+        if op in ('!', 'not'):
+            return not self._truthy(a)
+        self.error(f"未知一元运算符: {op}", None)
 
-    def eval_call(self, expr, scope):
-        func = self.eval_expr(expr.func, scope)
-        args = [self.eval_expr(a, scope) for a in expr.args]
-        kwargs = {k: self.eval_expr(v, scope) for k, v in expr.kwargs}
+    def try_magic_method(self, left, right, op):
+        method_name = MAGIC_METHODS.get(op)
+        if method_name is None:
+            return _NO_MAGIC
+        if isinstance(left, (EclInstance, EclClassIR)):
+            result = self.call_magic(left, method_name, [right])
+            if result is not _NO_MAGIC and result is not NULL:
+                return result
+        if isinstance(right, (EclInstance, EclClassIR)):
+            reverse_name = REVERSE_METHODS.get(op)
+            if reverse_name is not None:
+                result = self.call_magic(right, reverse_name, [left])
+                if result is not _NO_MAGIC and result is not NULL:
+                    return result
+        return _NO_MAGIC
 
+    def call_magic(self, obj, method_name, args):
+        if isinstance(obj, EclInstance):
+            method_stmt = obj.cls.methods.get(method_name)
+            if method_stmt is not None:
+                return self.call_method_ir(method_stmt, obj, args, {})
+            if method_name in obj.attrs:
+                fn = obj.attrs[method_name]
+                if callable(fn):
+                    return fn(*args)
+            return _NO_MAGIC
+        if isinstance(obj, EclClassIR):
+            method_stmt = obj.methods.get(method_name)
+            if method_stmt is not None:
+                if len(method_stmt) == 6:
+                    code, params, varargs, kwargs, ret, defaults = method_stmt
+                else:
+                    code, params, varargs, kwargs, ret = method_stmt
+                    defaults = {}
+                fn = EclFunctionIR(method_name, code, params, varargs,
+                                   kwargs, ret, self, defaults)
+                return self.call_function_ir(fn, args, {})
+            return _NO_MAGIC
+        return _NO_MAGIC
+
+    def get_attr(self, obj, name):
+        if isinstance(obj, CodeObject):
+            if name == 'run':
+                return obj.run
+            self.error(f"code 对象没有属性 '{name}'", None, 'AttributeError')
+        if isinstance(obj, GlobalView):
+            if name == 'keys':
+                return obj.keys
+            if name == 'get':
+                return lambda k, default=None: obj.cells[k].value if k in obj.cells else default
+            if name == 'has':
+                return lambda k: k in obj.cells
+            if name in obj.cells:
+                return obj.cells[name].value
+            self.error(f"global 对象没有变量 '{name}'", None, 'AttributeError')
+        if isinstance(obj, EclInstance):
+            if name in obj.attrs:
+                return obj.attrs[name]
+            if name in obj.cls.methods:
+                method_stmt = obj.cls.methods[name]
+                return lambda *a, **kw: self.call_method_ir(method_stmt, obj, a, kw)
+            self.error(f"对象 '{obj.cls.name}' 没有属性 '{name}'",
+                       None, 'AttributeError')
+        if isinstance(obj, EclClassIR):
+            if name in obj.methods:
+                method_stmt = obj.methods[name]
+                if len(method_stmt) == 6:
+                    code, params, varargs, kwargs, ret, defaults = method_stmt
+                else:
+                    code, params, varargs, kwargs, ret = method_stmt
+                    defaults = {}
+                fn = EclFunctionIR(name, code, params, varargs,
+                                   kwargs, ret, self, defaults)
+                return lambda *a, **kw: self.call_function_ir(fn, a, kw)
+            self.error(f"类 '{obj.name}' 没有属性 '{name}'", None, 'AttributeError')
+        try:
+            return getattr(obj, name)
+        except AttributeError:
+            self.error(f"对象没有属性 '{name}'", None, 'AttributeError')
+
+    def set_attr(self, obj, name, val):
+        if isinstance(obj, GlobalView):
+            obj.set(name, val)
+            return
+        if isinstance(obj, EclInstance):
+            obj.attrs[name] = val
+            return
+        try:
+            setattr(obj, name, val)
+        except AttributeError:
+            self.error(f"对象不支持属性赋值: {name}", None, 'AttributeError')
+
+    def call_value(self, func, args, kwargs):
+        if isinstance(func, EclInstance):
+            method = func.cls.methods.get('__call__')
+            if method is not None:
+                return self.call_method_ir(method, func, args, kwargs)
+            self.error("对象不可调用（没有 __call__）", None, 'TypeError')
         if not callable(func):
-            self.error(f"对象不可调用: {func!r}", expr, 'TypeError')
-
+            self.error(f"对象不可调用: {func!r}", None, 'TypeError')
         try:
             return func(*args, **kwargs)
         except EclException:
             raise
         except TypeError as e:
-            self.error(f"调用参数错误: {e}", expr, 'TypeError')
+            self.error(f"调用参数错误: {e}", None, 'TypeError')
         except Exception as e:
-            self.error(f"调用错误: {e}", expr, type(e).__name__)
+            self.error(f"调用错误: {e}", None, type(e).__name__)
 
-    def eval_attribute(self, expr, scope):
-        obj = self.eval_expr(expr.obj, scope)
-        if isinstance(obj, CodeObject):
-            if expr.attr == 'run':
-                return obj.run
-            self.error(f"code 对象没有属性 '{expr.attr}'", expr, 'AttributeError')
-        if isinstance(expr.obj, Variable) and expr.obj.name == 'global':
-            # 读取 global.x
-            cell = self.lookup_cell(expr.attr, expr, [self.globals])
-            return cell.value
-        if isinstance(obj, GlobalView):
-            if expr.attr == 'keys':
-                return obj.keys
-            if expr.attr == 'get':
-                return lambda name, default=None: obj.cells[name].value if name in obj.cells else default
-            if expr.attr == 'has':
-                return lambda name: name in obj.cells
-            if expr.attr in obj.cells:
-                return obj.cells[expr.attr].value
-            self.error(f"global 对象没有变量 '{expr.attr}'", expr, 'AttributeError')
-        if isinstance(obj, EclInstance):
-            if expr.attr in obj.attrs:
-                return obj.attrs[expr.attr]
-            if expr.attr in obj.cls.methods:
-                method_stmt = obj.cls.methods[expr.attr]
-                return lambda *a, **kw: self.call_method(method_stmt, obj, a, kw)
-            self.error(f"对象 '{obj.cls.name}' 没有属性 '{expr.attr}'",
-                       expr, 'AttributeError')
+    def call_function_ir(self, fn, args, kwargs, self_instance=None):
+        scope = {}
+        if self_instance is not None:
+            scope['self'] = Cell(self_instance)
 
-        if isinstance(obj, EclClass):
-            if expr.attr in obj.methods:
-                method_stmt = obj.methods[expr.attr]
-                return lambda *a, **kw: self.call_function(
-                    EclFunction(method_stmt, {**self.globals}, self), a, kw)
-            self.error(f"类 '{obj.name}' 没有属性 '{expr.attr}'",
-                       expr, 'AttributeError')
+        params = fn.params
+        for i, p in enumerate(params):
+            pname = p['name']
+            if i < len(args):
+                val = args[i]
+            elif pname in kwargs:
+                val = kwargs[pname]
+            elif pname in fn.defaults:
+                val = fn.defaults[pname]
+            else:
+                self.error(f"函数 '{fn.name}' 缺少参数 '{pname}'", None, 'TypeError')
+            if p.get('type'):
+                val = self.convert_type(val, p['type'])
+            scope[pname] = Cell(val)
 
+        vm = VM(fn.code, [], scope, self)
         try:
-            return getattr(obj, expr.attr)
-        except AttributeError:
-            self.error(f"对象没有属性 '{expr.attr}'", expr, 'AttributeError')
+            vm.run()
+        except ReturnSignal as r:
+            ret = r.value
+        else:
+            ret = NULL
 
+        if fn.ret_type and ret is not None and ret is not NULL:
+            ret = self.convert_type(ret, fn.ret_type)
+        return ret
 
+    def call_method_ir(self, method_stmt, instance, args, kwargs):
+        if isinstance(method_stmt, tuple):
+            if len(method_stmt) == 6:
+                code, params, varargs, kwargs_name, ret, defaults = method_stmt
+            else:
+                code, params, varargs, kwargs_name, ret = method_stmt
+                defaults = {}
+            fn = EclFunctionIR('__method__', code, params, varargs,
+                               kwargs_name, ret, self, defaults)
+            return self.call_function_ir(fn, (instance,) + tuple(args), kwargs)
+        self.error("call_method_ir 不支持 AST 版方法", None)
+
+    def interpret(self, program):
+        compiler = Compiler()
+        code, exception_table = compiler.compile_program(program)
+        print(code)
+        return
+        vm = VM(code, exception_table, self.globals, self)
+        try:
+            vm.run()
+        except ReturnSignal:
+            pass
 # ============================================================================
 # 顶层入口
 # ============================================================================
-def run_ecl(code, verbose=False):
+
+
+def run_ecl(code, verbose=False, without_check=False):
     """完整执行 ECL 代码：词法 -> 语法 -> 类型检查 -> 执行"""
     try:
         tokens = split_token(code)
@@ -2928,7 +3614,8 @@ def run_ecl(code, verbose=False):
 
     try:
         checker = Checker()
-        # checker.check(program)
+        if not without_check:
+            checker.check(program)
     except CheckError as e:
         print(f"静态检查错误: {e}", file=sys.stderr)
         return None
@@ -2962,8 +3649,15 @@ if __name__ == '__main__':
         type=pathlib.Path,
         help='输入文件路径（例如 code.ecl）'  # 这里就是 help
     )
+    parser.add_argument(
+        '--without-check',
+        action='store_true',
+        help='是否静态检查'  # 或更准确地写：跳过静态检查
+    )
     args = parser.parse_args()
     if args.input:
         with args.input.open('r', encoding='utf-8') as f:
             content = f.read()
-    run_ecl(content)
+    else:
+        content = ""
+    run_ecl(content, without_check=args.without_check)
