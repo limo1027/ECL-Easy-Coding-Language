@@ -37,10 +37,10 @@ print(not True)          # False
 
 # 比较：= 和 == 都做相等
 if x = 42:
-    print("x = 42 (用 =)")
+    print("x = 42 (using =)")
 end
 if x == 42:
-    print("x == 42 (用 ==)")
+    print("x == 42 (using ==)")
 end
 
 if x >= 42:
@@ -82,6 +82,7 @@ print(fact(5))            # 120
 
 fib(int n) -> int <- n if n < 2 else fib(n - 1) + fib(n - 2)
 print(fib(10))            # 55
+
 
 # 函数作为值
 
@@ -194,24 +195,24 @@ end
 
 # ---------- 11. 类与对象 ----------
 class Point:
-    def __init__(self, int x, int y) -> none:
+    def __init__(int x, int y) -> none:
         self.x <- x
         self.y <- y
         print(x, y)
     end
 
-    def dist(self) -> float:
+    def dist() -> float:
         return (self.x ** 2 + self.y ** 2) ** 0.5
     end
 
-    def __add__(self, other) -> Point:
+    def __add__(other) -> Point:
         return Point(self.x + other.x, self.y + other.y)
     end
-    def move(self, int dx, int dy) -> none:
+    def move(int dx, int dy) -> none:
         self.x <- self.x + dx
         self.y <- self.y + dy
     end
-    def __str__(self) -> str:
+    def __str__() -> str:
         return "Point(" + str(self.x) + ", " + str(self.y) + ")"
     end
 end
@@ -257,6 +258,8 @@ code c3 <- `
     int result <- 42
     str msg <- "done"
 `
+code c4 <- code('print("captured =", captured)')
+c4.run()
 global g <- c3.run();
 print(g.result)            # 42
 print(g.msg)               # done
