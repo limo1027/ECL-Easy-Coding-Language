@@ -5,7 +5,7 @@ class AsmGenerator:
     """IR -> MASM 64 位汇编（Windows x64 ABI，无 CRT）"""
 
     BUILTIN_CALLS = {'print', 'str', 'len',
-                     'int', 'float', 'bool', 'type', 'range'}
+                     'int', 'float', 'bool', 'type', 'range', 'free'}
 
     def __init__(self, ir):
         self.ir = ir
@@ -475,6 +475,17 @@ class AsmGenerator:
         elif kind == 'finally':
             # ★ 绝对不要写 self.emit(f"{finally_label}:")
             pass
+
+        elif kind == 'free':
+            _, dest, args = op
+            offd = self.alloc_temp(dest)
+            if args:
+                aoff = self.alloc_temp(args[0])
+                self.emit(f"    lea rcx, [rbp{aoff}]")
+                self.emit(f"    call runtime_free")
+            # 返回值置为 NULL (tag=3)
+            self.emit(f"    mov qword ptr [rbp{offd}], 3")
+            self.emit(f"    mov qword ptr [rbp{offd + 8}], 0")
 
         elif kind == 'raise':
             src = op[1]

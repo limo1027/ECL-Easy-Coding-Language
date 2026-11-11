@@ -1,4 +1,7 @@
 from class_and_vars import *
+import pathlib
+from ast_parse import Parser
+from token_parse import split_token
 
 
 class CompileError(Exception):
@@ -15,7 +18,8 @@ class Compiler:
     """AST -> 三地址码 IR"""
 
     BUILTIN_CALLS = {'print', 'str', 'len',
-                     'int', 'float', 'bool', 'type', 'range'}
+                     'int', 'float', 'bool',
+                     'type', 'range', 'free'}
 
     def __init__(self, parent=None, aot_mode=False):
         self._parent = parent
@@ -72,14 +76,58 @@ class Compiler:
         self.code.append(('label', name))
 
     # ---------- 入口 ----------
-
     def compile_program(self, program):
+        new_body = []
+        imported_modules = set()
+
+        for stmt in program.body:
+            if isinstance(stmt, ImportStmt):
+                if stmt.module in imported_modules:
+                    continue
+                imported_modules.add(stmt.module)
+
+                # ★ 宽松一点，多找几个地方
+                search_paths = [pathlib.Path("."), pathlib.Path(
+                    "example"), pathlib.Path("lib")]
+                module_path = None
+                for base in search_paths:
+                    candidate = base / (stmt.module + '.ecl')
+                    if candidate.exists():
+                        module_path = candidate
+                        break
+
+                if module_path is None:
+                    print(f"警告: 找不到模块 '{stmt.module}'")
+                    new_body.append(stmt)  # 找不到就保留原样，报错也好定位
+                    continue
+
+                print(
+                    f"DEBUG: 成功加载模块 {stmt.module} <- {module_path.absolute()}")
+                mod_code = module_path.read_text(encoding='utf-8')
+                mod_tokens = split_token(mod_code)
+                mod_parser = Parser(mod_tokens)
+                mod_program = mod_parser.parse()
+
+                prefix = stmt.module + "_"
+                for mod_stmt in mod_program.body:
+                    if isinstance(mod_stmt, FuncDefStmt):
+                        mod_stmt.name = prefix + mod_stmt.name
+                    elif isinstance(mod_stmt, ClassDefStmt):
+                        mod_stmt.name = prefix + mod_stmt.name
+                    new_body.append(mod_stmt)
+            else:
+                new_body.append(stmt)
+
+        program.body = new_body
+
+        # ★ 收集所有函数签名（展平后的新函数也会被收进去）
         for stmt in program.body:
             if isinstance(stmt, FuncDefStmt):
                 self.func_sigs[stmt.name] = (
                     [p.get('type') for p in stmt.params],
                     stmt.return_type,
                 )
+
         self.last_expr_temp = None
         for stmt in program.body:
             if isinstance(stmt, ExprStmt):
@@ -89,7 +137,6 @@ class Compiler:
                 self.compile_stmt(stmt)
         self.emit('halt')
         return self.code, self.exception_table
-
     # ---------- 语句 ----------
 
     def compile_stmt(self, stmt):
@@ -742,10 +789,22 @@ class Compiler:
                 return t
             if isinstance(expr.func, Variable) and expr.func.name in self.BUILTIN_CALLS:
                 args = [self.compile_expr(a) for a in expr.args]
+                if expr.func.name == 'free':
+                    # ★ 特殊处理：free 之后把变量本身也置为 null
+                    t = self.new_temp('none')
+                    self.emit('free', t, args)
+
+                    # 如果参数是个变量，手动生成一条清空指令
+                    if len(expr.args) == 1 and isinstance(expr.args[0], Variable):
+                        null_t = self.new_temp('null')
+                        # 用 None 代表空值（C 侧渲染为 VAL_NULL）
+                        self.emit('const', null_t, NULL)
+                        self.emit('store', expr.args[0].name, null_t)
+                    return t
                 ret_type = {
                     'print': 'none', 'str': 'str', 'len': 'int',
                     'int': 'int', 'float': 'float', 'bool': 'bool',
-                    'type': 'str', 'range': 'list',
+                    'type': 'str', 'range': 'list', 'free': 'none',
                 }.get(expr.func.name)
                 t = self.new_temp(ret_type)
                 self.emit(expr.func.name, t, args)

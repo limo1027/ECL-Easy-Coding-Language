@@ -108,6 +108,28 @@ finally:
 end
 
 print("=== 8 ===")
+list[int] data <- [1, 2, 3]
+print("Before free:", data)
+free(data)
+print("After free:", data)
+
+if data == null:
+    print("Data is now null!")
+end
+print("=== 9 ===")
+import math
+print("Square of 5:", math_square(5))
+print("Cube of 3:", math_cube(3))
+
+list[int] datas <- [1, 2, 3]
+print("Before free:", datas)
+free(datas)
+print("After free:", datas)
+
+if datas == null:
+    print("Data is now null!")
+end
+print("=== 10 ===")
 code c <- `int hidden <- 42
 print("Executing from code object, hidden =", hidden)`
 c.run()

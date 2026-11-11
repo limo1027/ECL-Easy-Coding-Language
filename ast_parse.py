@@ -136,7 +136,9 @@ class Parser:
                 self.expect('SYMBOL', ':')
                 return LabelStmt(name.value, line=tok.line, col=tok.col)
             if kw == 'import':
-                return self.parse_import()
+                res = self.parse_import()
+                print(res)
+                return res
             if kw == 'from':
                 return self.parse_from()
             if kw == 'try':

@@ -173,6 +173,12 @@ class VM:
             _, dest, value = op
             self.temps[dest] = value
 
+        elif kind == 'free':
+            _, dest, args = op
+            if args:
+                # 在 VM 里，直接置为 NULL
+                self.temps[args[0]] = NULL
+            self.temps[dest] = NULL
         elif kind == 'var':
             _, dest, name = op
             cell = self.lookup_cell(name)

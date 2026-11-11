@@ -14,6 +14,7 @@ from compiler import Compiler
 from errors import EclException, LexerError, ParseError
 from interpreter import Interpreter
 from asm import AsmGenerator
+from optimizer import Optimizer
 
 
 def run_ecl(code, without_check=False):
@@ -29,6 +30,7 @@ def run_ecl(code, without_check=False):
     try:
         parser = Parser(tokens)
         program = parser.parse()
+        print(program)
     except ParseError as e:
         import traceback
         traceback.print_exc()
@@ -47,7 +49,8 @@ def run_ecl(code, without_check=False):
     # 4. 编译为字节码 (IR)
     compiler = Compiler(aot_mode=False)
     code_ir, exception_table = compiler.compile_program(program)
-
+    optimizer = Optimizer()
+    code_ir = optimizer.optimize(code_ir)
     # 5. 实例化解释器并执行
     interp = Interpreter()
     try:

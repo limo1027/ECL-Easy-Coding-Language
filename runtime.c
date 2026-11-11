@@ -605,6 +605,36 @@ void runtime_type(Value* result, Value* v) {
 }
 void runtime_range(Value* result, Value* start, Value* end) { result->tag = VAL_NONE; result->i = 0; }
 
+// 释放对象并将值置为 NULL
+void runtime_free(Value* v) {
+    if (v->tag == VAL_LIST) {
+        EclList* l = (EclList*)v->ptr;
+        if (l) {
+            // 这里可以选择释放底层 items 数组
+            // 但由于使用 VirtualAlloc 或 Arena，可以留给系统或池子回收
+            l->len = 0;
+            l->cap = 0;
+            l->items = NULL;
+        }
+    } 
+    else if (v->tag == VAL_DICT) {
+        EclDict* d = (EclDict*)v->ptr;
+        if (d) { 
+            d->size = 0; 
+            d->head = NULL; 
+        }
+    }
+    else if (v->tag == VAL_INSTANCE) {
+        EclInstance* inst = (EclInstance*)v->ptr;
+        if (inst) { 
+            inst->attrs = NULL; 
+        }
+    }
+    
+    // 将所有已释放的对象置为 NULL（ValTag = 3）
+    v->tag = VAL_NULL; 
+    v->i = 0;
+}
 // ============================================================
 // 入口
 // ============================================================
